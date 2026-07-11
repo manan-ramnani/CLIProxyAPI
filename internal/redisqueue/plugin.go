@@ -73,6 +73,9 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		CacheReadTokens:        record.Detail.CacheReadTokens,
 		CacheReadTokensPresent: true,
 		CacheCreationTokens:    record.Detail.CacheCreationTokens,
+		CacheCreation5mTokens:  record.Detail.CacheCreation5mTokens,
+		CacheCreation1hTokens:  record.Detail.CacheCreation1hTokens,
+		CacheTelemetryPresent:  record.Detail.CacheTelemetryPresent,
 		TotalTokens:            record.Detail.TotalTokens,
 	}
 	if tokens.TotalTokens == 0 {
@@ -104,6 +107,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 	payload, err := json.Marshal(queuedUsageDetail{
 		requestDetail:       detail,
 		Provider:            provider,
+		Operation:           normalizeOperation(record.Operation),
 		ExecutorType:        executorType,
 		Model:               modelName,
 		Alias:               aliasName,
@@ -124,6 +128,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 type queuedUsageDetail struct {
 	requestDetail
 	Provider            string `json:"provider"`
+	Operation           string `json:"operation"`
 	ExecutorType        string `json:"executor_type"`
 	Model               string `json:"model"`
 	Alias               string `json:"alias"`
@@ -157,7 +162,18 @@ type tokenStats struct {
 	CacheReadTokens        int64 `json:"cache_read_tokens"`
 	CacheReadTokensPresent bool  `json:"cache_read_tokens_present"`
 	CacheCreationTokens    int64 `json:"cache_creation_tokens"`
+	CacheCreation5mTokens  int64 `json:"cache_creation_5m_tokens"`
+	CacheCreation1hTokens  int64 `json:"cache_creation_1h_tokens"`
+	CacheTelemetryPresent  bool  `json:"cache_telemetry_present"`
 	TotalTokens            int64 `json:"total_tokens"`
+}
+
+func normalizeOperation(operation string) string {
+	operation = strings.ToLower(strings.TrimSpace(operation))
+	if operation == "" {
+		return "inference"
+	}
+	return operation
 }
 
 type failDetail struct {

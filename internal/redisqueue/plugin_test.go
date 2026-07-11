@@ -26,6 +26,7 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 		plugin := &usageQueuePlugin{}
 		plugin.HandleUsage(ctx, coreusage.Record{
 			Provider:            "openai",
+			Operation:           "compaction",
 			ExecutorType:        "KimiExecutor",
 			Model:               "gpt-5.4",
 			Alias:               "client-gpt",
@@ -40,9 +41,12 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 			RequestedAt:         time.Date(2026, 4, 25, 0, 0, 0, 0, time.UTC),
 			Latency:             1500 * time.Millisecond,
 			Detail: coreusage.Detail{
-				InputTokens:  10,
-				OutputTokens: 20,
-				TotalTokens:  30,
+				InputTokens:           10,
+				OutputTokens:          20,
+				TotalTokens:           30,
+				CacheCreation5mTokens: 5,
+				CacheCreation1hTokens: 7,
+				CacheTelemetryPresent: true,
 			},
 			ResponseHeaders: responseHeaders.Clone(),
 		})
@@ -50,6 +54,7 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 
 		payload := popSinglePayload(t)
 		requireStringField(t, payload, "provider", "openai")
+		requireStringField(t, payload, "operation", "compaction")
 		requireStringField(t, payload, "executor_type", "KimiExecutor")
 		requireStringField(t, payload, "model", "gpt-5.4")
 		requireStringField(t, payload, "alias", "client-gpt")
@@ -66,6 +71,10 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 		requireHeaderField(t, payload, "response_headers", "Retry-After", []string{"30"})
 		requireBoolField(t, payload, "failed", false)
 		requireBoolField(t, payload, "generate", true)
+		tokens := requireTokensPayload(t, payload)
+		requireBoolField(t, tokens, "cache_telemetry_present", true)
+		requireInt64Field(t, tokens, "cache_creation_5m_tokens", 5)
+		requireInt64Field(t, tokens, "cache_creation_1h_tokens", 7)
 		requireFailField(t, payload, http.StatusOK, "")
 	})
 }
@@ -443,6 +452,22 @@ func requireTokensPayload(t *testing.T, payload map[string]json.RawMessage) map[
 func requireTokensBoolField(t *testing.T, payload map[string]json.RawMessage, key string, want bool) {
 	t.Helper()
 	requireBoolField(t, requireTokensPayload(t, payload), key, want)
+}
+
+func requireInt64Field(t *testing.T, payload map[string]json.RawMessage, key string, want int64) {
+	t.Helper()
+
+	raw, ok := payload[key]
+	if !ok {
+		t.Fatalf("payload missing %q", key)
+	}
+	var got int64
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal %q: %v", key, err)
+	}
+	if got != want {
+		t.Fatalf("%s = %d, want %d", key, got, want)
+	}
 }
 
 func requireFailField(t *testing.T, payload map[string]json.RawMessage, wantStatus int, wantBody string) {
