@@ -414,6 +414,17 @@ func codexReasoningReplaySessionKey(ctx context.Context, from sdktranslator.Form
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	baseKey := codexReasoningReplayBaseSessionKey(ctx, from, req, opts, body)
+	if baseKey == "" {
+		return ""
+	}
+	if sourceFormatEqual(from, sdktranslator.FormatClaude) {
+		return codexClaudeCodeAgentScopedReplaySessionKey(ctx, baseKey, opts.Headers)
+	}
+	return baseKey
+}
+
+func codexReasoningReplayBaseSessionKey(ctx context.Context, from sdktranslator.Format, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, body []byte) string {
 	if value := metadataString(opts.Metadata, cliproxyexecutor.ExecutionSessionMetadataKey); value != "" {
 		return "execution:" + value
 	}
@@ -443,6 +454,27 @@ func codexReasoningReplaySessionKey(ctx context.Context, from sdktranslator.Form
 		}
 	}
 	return ""
+}
+
+func codexClaudeCodeAgentScopedReplaySessionKey(ctx context.Context, baseKey string, headers http.Header) string {
+	baseKey = strings.TrimSpace(baseKey)
+	if baseKey == "" {
+		return ""
+	}
+	agentKind := "main"
+	agentID := helps.ExtractClaudeCodeAgentID(ctx, headers)
+	if agentID != "" {
+		agentKind = "agent"
+	}
+	seed := strings.Join([]string{
+		"cli-proxy-api",
+		"codex-reasoning-replay",
+		"claude-agent-scope-v1",
+		baseKey,
+		agentKind,
+		agentID,
+	}, "\x00")
+	return "claude-agent-v1:" + uuid.NewSHA1(uuid.NameSpaceOID, []byte(seed)).String()
 }
 
 func metadataString(metadata map[string]any, key string) string {
@@ -995,7 +1027,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
 	var identityState codexIdentityConfuseState
-	httpReq, upstreamBody, identityState, err := e.cacheHelper(ctx, from, url, auth, req, originalPayloadSource, body)
+	httpReq, upstreamBody, identityState, err := e.cacheHelper(ctx, from, url, auth, req, originalPayloadSource, body, opts.Headers)
 	if err != nil {
 		return resp, err
 	}
@@ -1188,7 +1220,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses/compact"
 	var identityState codexIdentityConfuseState
-	httpReq, upstreamBody, identityState, err := e.cacheHelper(ctx, from, url, auth, req, originalPayloadSource, body)
+	httpReq, upstreamBody, identityState, err := e.cacheHelper(ctx, from, url, auth, req, originalPayloadSource, body, opts.Headers)
 	if err != nil {
 		return resp, err
 	}
@@ -1317,7 +1349,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
 	var identityState codexIdentityConfuseState
-	httpReq, upstreamBody, identityState, err := e.cacheHelper(ctx, from, url, auth, req, originalPayloadSource, body)
+	httpReq, upstreamBody, identityState, err := e.cacheHelper(ctx, from, url, auth, req, originalPayloadSource, body, opts.Headers)
 	if err != nil {
 		return nil, err
 	}
@@ -1762,10 +1794,14 @@ type codexIdentityReplacement struct {
 	confused string
 }
 
-func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Format, url string, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, userPayload []byte, rawJSON []byte) (*http.Request, []byte, codexIdentityConfuseState, error) {
+func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Format, url string, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, userPayload []byte, rawJSON []byte, requestHeaders ...http.Header) (*http.Request, []byte, codexIdentityConfuseState, error) {
 	var cache helps.CodexCache
 	if sourceFormatEqual(from, sdktranslator.FormatClaude) {
-		cached, ok, errCache := helps.ClaudeCodePromptCache(ctx, req.Model, req.Payload, nil)
+		var headers http.Header
+		if len(requestHeaders) > 0 {
+			headers = requestHeaders[0]
+		}
+		cached, ok, errCache := helps.ClaudeCodePromptCache(ctx, req.Model, req.Payload, headers)
 		if errCache != nil {
 			return nil, nil, codexIdentityConfuseState{}, errCache
 		}
