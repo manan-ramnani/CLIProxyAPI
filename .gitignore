@@ -12,6 +12,8 @@ logs/*
 conv/*
 temp/*
 refs/*
+plugins/*
+examples/plugin/bin/*
 
 # Storage backends
 pgstore/*
@@ -23,10 +25,12 @@ static/*
 
 # Authentication data
 auths/*
+/auths
 !auths/.gitkeep
 
 # Documentation
 docs/*
+!docs/windows-claude-code-hybrid.md
 AGENTS.md
 CLAUDE.md
 GEMINI.md
@@ -36,9 +40,11 @@ GEMINI.md
 .worktrees/
 .codex/*
 .claude/*
+.claude
 .gemini/*
 .serena/*
 .agent/*
+.agents
 .agents/*
 .opencode/*
 .idea/*
@@ -50,3 +56,4 @@ _bmad-output/*
 # macOS
 .DS_Store
 ._*
+.gocache/

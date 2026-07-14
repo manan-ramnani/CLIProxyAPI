@@ -1,216 +1,358 @@
-# CLI Proxy API
-
-English | [中文](README_CN.md) | [日本語](README_JA.md)
+# CLIProxyAPI Hybrid
 
-A proxy server that provides OpenAI/Gemini/Claude/Codex compatible API interfaces for CLI.
-
-It now also supports OpenAI Codex (GPT models) and Claude Code via OAuth.
-
-So you can use local or multi-account CLI access with OpenAI(include Responses)/Gemini/Claude-compatible clients and SDKs.
-
-## Sponsor
+[![CI](https://github.com/manan-ramnani/CLIProxyAPI/actions/workflows/ci.yml/badge.svg)](https://github.com/manan-ramnani/CLIProxyAPI/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/manan-ramnani/CLIProxyAPI?display_name=tag&sort=semver)](https://github.com/manan-ramnani/CLIProxyAPI/releases)
+[![License](https://img.shields.io/github/license/manan-ramnani/CLIProxyAPI)](LICENSE)
 
-[![z.ai](https://assets.router-for.me/english-5-0.jpg)](https://z.ai/subscribe?ic=8JVLJQFSKB)
+Use **Fable 5 and GPT-5.6 models seamlessly in the same Claude Code workflow**.
 
-This project is sponsored by Z.ai, supporting us with their GLM CODING PLAN.
+Keep Fable as the main model for frontend or product work, delegate backend and adversarial-review tasks to Opus workers backed by GPT-5.6 Sol, and let both lanes review each other without changing terminals or maintaining separate Claude Code installations. One `/model` picker controls the experience; CLIProxyAPI routes each request to the correct provider and applies the correct compaction strategy automatically.
 
-GLM CODING PLAN is a subscription service designed for AI coding, starting at just $10/month. It provides access to their flagship GLM-4.7 & （GLM-5 Only Available  for Pro Users）model across 10+ popular AI coding tools (Claude Code, Cline, Roo Code, etc.), offering developers top-tier, fast, and stable coding experiences.
-
-Get 10% OFF GLM CODING PLAN：https://z.ai/subscribe?ic=8JVLJQFSKB
+This is an upstream-compatible fork of [router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI). It adds a hybrid Claude Code route, Codex-native context compaction, cache-aware observability, bounded request logging, and a cross-platform `claude-codex` installer. The original provider support and API compatibility remain intact.
 
----
+> This project is not affiliated with or endorsed by Anthropic or OpenAI. Review the applicable product terms before using subscription-backed authentication through third-party clients.
 
-<table>
-<tbody>
-<tr>
-<td width="180"><a href="https://www.packyapi.com/register?aff=cliproxyapi"><img src="./assets/packycode.png" alt="PackyCode" width="150"></a></td>
-<td>Thanks to PackyCode for sponsoring this project! PackyCode is a reliable and efficient API relay service provider, offering relay services for Claude Code, Codex, Gemini, and more. PackyCode provides special discounts for our software users: register using <a href="https://www.packyapi.com/register?aff=cliproxyapi">this link</a> and enter the "cliproxyapi" promo code during recharge to get 10% off.</td>
-</tr>
-<tr>
-<td width="180"><a href="https://www.aicodemirror.com/register?invitecode=TJNAIF"><img src="./assets/aicodemirror.png" alt="AICodeMirror" width="150"></a></td>
-<td>Thanks to AICodeMirror for sponsoring this project! AICodeMirror provides official high-stability relay services for Claude Code / Codex / Gemini CLI, with enterprise-grade concurrency, fast invoicing, and 24/7 dedicated technical support. Claude Code / Codex / Gemini official channels at 38% / 2% / 9% of original price, with extra discounts on top-ups! AICodeMirror offers special benefits for CLIProxyAPI users: register via <a href="https://www.aicodemirror.com/register?invitecode=TJNAIF">this link</a> to enjoy 20% off your first top-up, and enterprise customers can get up to 25% off!</td>
-</tr>
-<tr>
-<td width="180"><a href="https://shop.bmoplus.com/?utm_source=github"><img src="./assets/bmoplus.png" alt="BmoPlus" width="150"></a></td>
-<td>Huge thanks to BmoPlus for sponsoring this project! BmoPlus is a highly reliable AI account provider built strictly for heavy AI users and developers. They offer rock-solid, ready-to-use accounts and official top-up services for ChatGPT Plus / ChatGPT Pro (Full Warranty) / Claude Pro / Super Grok / Gemini Pro. By registering and ordering through <a href="https://shop.bmoplus.com/?utm_source=github">BmoPlus - Premium AI Accounts & Top-ups</a>, users can unlock the mind-blowing rate of <b>10% of the official GPT subscription price (90% OFF)</b>!</td>
-</tr>
-<tr>
-<td width="180"><a href="https://www.lingtrue.com/register"><img src="./assets/lingtrue.png" alt="LingtrueAPI" width="150"></a></td>
-<td>Thanks to LingtrueAPI for its sponsorship of this project! LingtrueAPI is a global large - model API intermediary service platform that provides API calling services for various top - notch models such as Claude Code, Codex, and Gemini. It is committed to enabling users to connect to global AI capabilities at low cost and with high stability. LingtrueAPI offers special discounts to users of this software: register using <a href="https://www.lingtrue.com/register">this link</a>, and enter the promo code "LingtrueAPI" when making the first recharge to enjoy a 10% discount.</td>
-</tr>
-<tr>
-<td width="180"><a href="https://poixe.com/i/m8kvep"><img src="./assets/poixeai.png" alt="PoixeAI" width="150"></a></td>
-<td>Thanks to Poixe AI for sponsoring this project! Poixe AI provides reliable LLM API services. You can leverage the platform's API endpoints to seamlessly build AI-powered products. Additionally, you can become a vendor by providing AI API resources to the platform and earn revenue. Register through the exclusive CLIProxyAPI <a href="https://poixe.com/i/m8kvep">referral link</a> and receive a bonus of $5 USD on your first top-up.</td>
-</tr>
-<tr>
-<td width="180"><a href="https://coder.visioncoder.cn"><img src="./assets/visioncoder.png" alt="VisionCoder" width="150"></a></td>
-<td>Thanks to VisionCoder for supporting this project. <a href="https://coder.visioncoder.cn" target="_blank">VisionCoder Developer Platform</a> is a reliable and efficient API relay service provider, offering access to mainstream AI models such as Claude Code, Codex, and Gemini. It helps developers and teams integrate AI capabilities more easily and improve productivity.
-<p></p>
-VisionCoder is also offering our users a limited-time <a href="https://coder.visioncoder.cn" target="_blank">Token Plan</a> promotion: buy 1 month and get 1 month free.</td>
-</tr>
-</tbody>
-</table>
+## Why this fork exists
 
-## Overview
+Claude Code can use an Anthropic-compatible gateway, but long Codex conversations need different context and cache behavior from native Claude conversations:
 
-- OpenAI/Gemini/Claude compatible API endpoints for CLI models
-- OpenAI Codex support (GPT models) via OAuth login
-- Claude Code support via OAuth login
-- Amp CLI and IDE extensions support with provider routing
-- Streaming and non-streaming responses
-- Function calling/tools support
-- Multimodal input support (text and images)
-- Multiple accounts with round-robin load balancing (Gemini, OpenAI, Claude)
-- Simple CLI authentication flows (Gemini, OpenAI, Claude)
-- Generative Language API Key support
-- AI Studio Build multi-account load balancing
-- Gemini CLI multi-account load balancing
-- Claude Code multi-account load balancing
-- OpenAI Codex multi-account load balancing
-- OpenAI-compatible upstream providers via config (e.g., OpenRouter)
-- Reusable Go SDK for embedding the proxy (see `docs/sdk-usage.md`)
+- Claude Code normally decides when to compact from the context window advertised by `/v1/models`.
+- Codex models can perform native server-side compaction through the Responses API.
+- Replacing arbitrary history or compacting too often destroys prompt-prefix continuity and causes expensive cache misses.
+- A single Claude Code session may switch between Codex-backed Opus/Sonnet/Haiku classes and a native model such as Fable.
 
-## Getting Started
+This fork keeps those lanes separate.
 
-CLIProxyAPI Guides: [https://help.router-for.me/](https://help.router-for.me/)
+### The hybrid experience
 
-## Management API
+Start one `claude-codex` session and use Claude Code normally:
 
-see [MANAGEMENT_API.md](https://help.router-for.me/management/api)
+- Select **Fable 5** in `/model` for the main thread. Requests stay on the native Claude provider and use Claude Code's normal compaction.
+- Select **Opus**, or launch a workflow that requests an Opus worker. That request routes to **GPT-5.6 Sol at xhigh effort** and uses Codex-native server compaction.
+- Sonnet and Haiku workers route to **GPT-5.6 Terra** and **GPT-5.6 Luna**.
+- Switch back to Fable at any time. Provider routing, cache identity, context metadata, and compaction state follow the selected model rather than leaking across lanes.
 
-## Amp CLI Support
+This makes mixed-agent workflows practical: Fable can own frontend implementation while GPT-5.6 Sol owns backend work and adversarial review, with each model reviewing the other's output inside the same Claude Code project.
 
-CLIProxyAPI includes integrated support for [Amp CLI](https://ampcode.com) and Amp IDE extensions, enabling you to use your Google/ChatGPT/Claude OAuth subscriptions with Amp's coding tools:
+```mermaid
+flowchart LR
+    CC["Claude Code"] --> GW["CLIProxyAPI Hybrid"]
+    GW -->|"Opus / Sonnet / Haiku"| CX["GPT-5.6 Sol / Terra / Luna"]
+    GW -->|"Fable 5 selected"| CL["Native Claude provider"]
+    CX --> NC["Responses-native compaction"]
+    CL --> AC["Claude Code compaction"]
+    GW --> OBS["Cache and compaction monitor"]
+```
 
-- Provider route aliases for Amp's API patterns (`/api/provider/{provider}/v1...`)
-- Management proxy for OAuth authentication and account features
-- Smart model fallback with automatic routing
-- **Model mapping** to route unavailable models to alternatives (e.g., `claude-opus-4.5` → `claude-sonnet-4`)
-- Security-first design with localhost-only management endpoints
+## Highlights
 
-When you need the request/response shape of a specific backend family, use the provider-specific paths instead of the merged `/v1/...` endpoints:
+- Dual-provider `/model` picker: Codex-backed model classes and native Claude models coexist.
+- Codex-native compaction at a configurable logical token threshold.
+- Bounded multi-pass recovery when a fresh or reset lane already exceeds one upstream context window.
+- Exact recent-tail preservation so active tool-call pairs are not split.
+- Cache-stable history replacement after compaction.
+- Worker-aware state isolation for concurrent Claude Code agents.
+- Effort forwarding, including Claude Code's `/effort` and `--effort` controls.
+- Fixed-header TUI request monitor with tokens, cache reuse, estimated cost, misses, and compactions.
+- Metadata-only success summaries with rolling retention; full request logs only for failures.
+- Idempotent PowerShell, Bash, Zsh, and Fish installation for `claude-codex`.
+- Clean upstream rebase path and SemVer-compatible hybrid release tags.
 
-- Use `/api/provider/{provider}/v1/messages` for messages-style backends.
-- Use `/api/provider/{provider}/v1beta/models/...` for model-scoped generate endpoints.
-- Use `/api/provider/{provider}/v1/chat/completions` for chat-completions backends.
+## Model routing
 
-These routes help you select the protocol surface, but they do not by themselves guarantee a unique inference executor when the same client-visible model name is reused across multiple backends. Inference routing is still resolved from the request model/alias. For strict backend pinning, use unique aliases, prefixes, or otherwise avoid overlapping client-visible model names.
+The generated `claude-codex` function applies this default class mapping:
 
-**→ [Complete Amp CLI Integration Guide](https://help.router-for.me/agent-client/amp-cli.html)**
+| Claude Code class | Routed model | Default reasoning effort |
+| --- | --- | --- |
+| Opus | `gpt-5.6-sol` | `xhigh` |
+| Sonnet | `gpt-5.6-terra` | `xhigh` |
+| Haiku | `gpt-5.6-luna` | `xhigh` |
+| Native model selected through `/model` | Original Claude model | native behavior |
 
-## SDK Docs
+The launcher starts with `--model opus --effort xhigh` unless either option is already present. All remaining Claude Code arguments are forwarded unchanged. `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1` allows Claude Code's effort picker to keep working with gateway model IDs.
 
-- Usage: [docs/sdk-usage.md](docs/sdk-usage.md)
-- Advanced (executors & translators): [docs/sdk-advanced.md](docs/sdk-advanced.md)
-- Access: [docs/sdk-access.md](docs/sdk-access.md)
-- Watcher: [docs/sdk-watcher.md](docs/sdk-watcher.md)
-- Custom Provider Example: `examples/custom-provider`
+The native `claude` command is never replaced or modified by the installer.
 
-## Contributing
+## Quick start
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+### 1. Install Claude Code
 
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+Install the current Claude Code CLI from [Anthropic's documentation](https://docs.anthropic.com/en/docs/claude-code/overview), then confirm that the executable is available:
 
-## Who is with us?
+```powershell
+claude --version
+```
 
-Those projects are based on CLIProxyAPI:
+### 2. Get CLIProxyAPI Hybrid
 
-### [vibeproxy](https://github.com/automazeio/vibeproxy)
+Download an archive from [Releases](https://github.com/manan-ramnani/CLIProxyAPI/releases), or build from source:
 
-Native macOS menu bar app to use your Claude Code & ChatGPT subscriptions with AI coding tools - no API keys needed
+```powershell
+git clone https://github.com/manan-ramnani/CLIProxyAPI.git
+cd CLIProxyAPI
+go build -o cli-proxy-api.exe ./cmd/server
+```
 
-### [Subtitle Translator](https://github.com/VjayC/SRT-Subtitle-Translator-Validator)
+Go 1.26 or newer is required.
 
-Browser-based tool to translate SRT subtitles using your Gemini subscription via CLIProxyAPI with automatic validation/error correction - no API keys needed
+### 3. Create a local configuration
 
-### [CCS (Claude Code Switch)](https://github.com/kaitranntt/ccs)
+Copy [`config.example.yaml`](config.example.yaml) to `config.yaml`. At minimum, bind locally, choose a strong local client key, and enable native compaction:
 
-CLI wrapper for instant switching between multiple Claude accounts and alternative models (Gemini, Codex, Antigravity) via CLIProxyAPI OAuth - no API keys needed
+```yaml
+host: "127.0.0.1"
+port: 8317
 
-### [Quotio](https://github.com/nguyenphutrong/quotio)
+api-keys:
+  - "replace-with-a-random-local-proxy-key"
 
-Native macOS menu bar app that unifies Claude, Gemini, OpenAI, and Antigravity subscriptions with real-time quota tracking and smart auto-failover for AI coding tools like Claude Code, OpenCode, and Droid - no API keys needed.
+codex:
+  native-compaction:
+    enabled: true
+    trigger-tokens: 240000
+    context-window: 272000
+    claude-client-context-window: 1000000
+    preserve-recent-tokens: 32000
+    retained-message-tokens: 64000
+    state-ttl: 168h
+```
 
-### [CodMate](https://github.com/loocor/CodMate)
+`claude-client-context-window` is discovery metadata for Codex-backed models, not a claim that the upstream model has a one-million-token context window. It delays Claude Code's client compaction while the proxy enforces the real 272,000-token boundary and begins native compaction at 240,000 logical input tokens.
 
-Native macOS SwiftUI app for managing CLI AI sessions (Codex, Claude Code, Gemini CLI) with unified provider management, Git review, project organization, global search, and terminal integration. Integrates CLIProxyAPI to provide OAuth authentication for Codex, Claude, Gemini, and Antigravity, with built-in and third-party provider rerouting through a single proxy endpoint - no API keys needed for OAuth providers.
+Do not commit `config.yaml`. It is ignored by this repository.
 
-### [ProxyPilot](https://github.com/Finesssee/ProxyPilot)
+### 4. Authenticate both providers
 
-Windows-native CLIProxyAPI fork with TUI, system tray, and multi-provider OAuth for AI coding tools - no API keys needed.
+Use the fork binary for both OAuth flows:
 
-### [Claude Proxy VSCode](https://github.com/uzhao/claude-proxy-vscode)
+```powershell
+.\cli-proxy-api.exe --config .\config.yaml --codex-login
+.\cli-proxy-api.exe --config .\config.yaml --claude-login
+```
 
-VSCode extension for quick switching between Claude Code models, featuring integrated CLIProxyAPI as its backend with automatic background lifecycle management.
+Claude authentication is optional if you only use Codex models. It is required to select native Claude models such as Fable from the same `/model` picker.
 
-### [ZeroLimit](https://github.com/0xtbug/zero-limit)
+OAuth files are stored under the configured `auth-dir` and are ignored by Git.
 
-Windows desktop app built with Tauri + React for monitoring AI coding assistant quotas via CLIProxyAPI. Track usage across Gemini, Claude, OpenAI Codex, and Antigravity accounts with real-time dashboard, system tray integration, and one-click proxy control - no API keys needed.
+### 5. Install `claude-codex`
 
-### [CPA-XXX Panel](https://github.com/ferretgeek/CPA-X)
+Preview the profile update first:
 
-A lightweight web admin panel for CLIProxyAPI with health checks, resource monitoring, real-time logs, auto-update, request statistics and pricing display. Supports one-click installation and systemd service.
+```powershell
+.\cli-proxy-api.exe --config .\config.yaml --install-claude-code-aliases --alias-dry-run
+```
 
-### [CLIProxyAPI Tray](https://github.com/kitephp/CLIProxyAPI_Tray)
+Then install it:
 
-A Windows tray application implemented using PowerShell scripts, without relying on any third-party libraries. The main features include: automatic creation of shortcuts, silent running, password management, channel switching (Main / Plus), and automatic downloading and updating.
+```powershell
+.\cli-proxy-api.exe --config .\config.yaml --install-claude-code-aliases
+. $PROFILE.CurrentUserAllHosts
+```
 
-### [霖君](https://github.com/wangdabaoqq/LinJun)
+On macOS or Linux:
 
-霖君 is a cross-platform desktop application for managing AI programming assistants, supporting macOS, Windows, and Linux systems. Unified management of Claude Code, Gemini CLI, OpenAI Codex, and other AI coding tools, with local proxy for multi-account quota tracking and one-click configuration.
+```bash
+./cli-proxy-api --config ./config.yaml --install-claude-code-aliases
+source ~/.zshrc  # or ~/.bashrc
+```
 
-### [CLIProxyAPI Dashboard](https://github.com/itsmylife44/cliproxyapi-dashboard)
+The installer:
 
-A modern web-based management dashboard for CLIProxyAPI built with Next.js, React, and PostgreSQL. Features real-time log streaming, structured configuration editing, API key management, OAuth provider integration for Claude/Gemini/Codex, usage analytics, container management, and config sync with OpenCode via companion plugin - no manual YAML editing needed.
+- detects PowerShell, Bash, Zsh, or Fish;
+- finds the real Claude Code executable before defining the function;
+- writes one marked, replaceable profile block;
+- preserves all unrelated profile content;
+- reads the local proxy key from `config.yaml` without printing it;
+- leaves the native `claude` command unchanged;
+- is idempotent, so it is safe to rerun after changing the proxy port or local key.
 
-### [All API Hub](https://github.com/qixing-jk/all-api-hub)
+Use explicit overrides when auto-detection is not appropriate:
 
-Browser extension for one-stop management of New API-compatible relay site accounts, featuring balance and usage dashboards, auto check-in, one-click key export to common apps, in-page API availability testing, and channel/model sync and redirection. It integrates with CLIProxyAPI through the Management API for one-click provider import and config sync.
+```text
+--alias-shell auto|powershell|bash|zsh|fish
+--alias-profile <path>
+--alias-base-url <url>
+--claude-executable <path-or-command>
+--alias-dry-run
+```
 
-### [Shadow AI](https://github.com/HEUDavid/shadow-ai)
+The local client key is written to the selected shell profile because Claude Code must send it to the proxy. Protect that profile as a secret-bearing local file. Upstream OAuth access and refresh tokens are never written to the profile.
 
-Shadow AI is an AI assistant tool designed specifically for restricted environments. It provides a stealthy operation
-mode without windows or traces, and enables cross-device AI Q&A interaction and control via the local area network (
-LAN). Essentially, it is an automated collaboration layer of "screen/audio capture + AI inference + low-friction delivery",
-helping users to immersively use AI assistants across applications on controlled devices or in restricted environments.
+### 6. Start the proxy
 
-### [ProxyPal](https://github.com/buddingnewinsights/proxypal)
+Run the proxy and TUI together:
 
-Cross-platform desktop app (macOS, Windows, Linux) wrapping CLIProxyAPI with a native GUI. Connects Claude, ChatGPT, Gemini, GitHub Copilot, and custom OpenAI-compatible endpoints with usage analytics, request monitoring, and auto-configuration for popular coding tools - no API keys needed.
+```powershell
+.\cli-proxy-api.exe --config .\config.yaml --tui --standalone
+```
 
-### [CLIProxyAPI Quota Inspector](https://github.com/AllenReder/CLIProxyAPI-Quota-Inspector)
+Or start the server without the TUI:
 
-Ready-to-use cross-platform quota inspector for CLIProxyAPI, supporting per-account codex 5h/7d quota windows, plan-based sorting, status coloring, and multi-account summary analytics.
+```powershell
+.\cli-proxy-api.exe --config .\config.yaml
+```
 
-### [CPA Usage Keeper](https://github.com/Willxup/cpa-usage-keeper)
+### 7. Use either mode
 
-Standalone persistence and visualization service for CLIProxyAPI, with periodic data sync, SQLite storage, aggregate APIs, and a built-in dashboard for usage and statistics.
+```powershell
+# Native Claude Code behavior
+claude
 
-> [!NOTE]  
-> If you developed a project based on CLIProxyAPI, please open a PR to add it to this list.
+# Hybrid gateway, defaulting to Opus -> gpt-5.6-sol at xhigh
+claude-codex
 
-## More choices
+# All normal Claude Code options remain available
+claude-codex --model sonnet --effort high --resume
+```
 
-Those projects are ports of CLIProxyAPI or inspired by it:
+Inside `claude-codex`, use `/model` to move between the mapped Codex classes and native Claude models. Use `/effort` to change supported reasoning effort during the session.
 
-### [9Router](https://github.com/decolua/9router)
+## Compaction behavior
 
-A Next.js implementation inspired by CLIProxyAPI, easy to install and use, built from scratch with format translation (OpenAI/Claude/Gemini/Ollama), combo system with auto-fallback, multi-account management with exponential backoff, a Next.js web dashboard, and support for CLI tools (Cursor, Claude Code, Cline, RooCode) - no API keys needed.
+### Codex lane
 
-### [OmniRoute](https://github.com/diegosouzapw/OmniRoute)
+For Claude-originated requests resolved to the Codex provider, the proxy:
 
-Never stop coding. Smart routing to FREE & low-cost AI models with automatic fallback.
+1. Tracks each Claude Code session and worker as a separate compaction lane.
+2. Begins compaction at `trigger-tokens`.
+3. Preserves an exact recent tail outside the compacted prefix.
+4. Uses Responses v2 native compaction when available and falls back to `/responses/compact` only when required.
+5. Rewrites later full-history Claude requests to the opaque compacted root plus the exact post-boundary delta.
+6. Commits state only after a validated terminal response and an atomic durable write.
 
-OmniRoute is an AI gateway for multi-provider LLMs: an OpenAI-compatible endpoint with smart routing, load balancing, retries, and fallbacks. Add policies, rate limits, caching, and observability for reliable, cost-aware inference.
+If a new or reset lane arrives above one safe compaction request, the proxy compacts bounded prefixes in sequence. A deterministic `context_length_exceeded` response causes a smaller-prefix replan instead of a retry of the same oversized body.
 
-> [!NOTE]  
-> If you have developed a port of CLIProxyAPI or a project inspired by it, please open a PR to add it to this list.
+The active user turn, tool calls, and tool results are never split across the preserved boundary. Encrypted Codex reasoning replay is deduplicated and scoped to the correct credential and worker lane.
 
-## License
+### Native Claude lane
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+Native Claude models retain their provider-reported context window. Claude Code therefore uses its normal client-side compaction behavior for Fable and other native models. Switching providers does not reuse Codex compaction state in the Claude lane.
+
+### Cache continuity
+
+Successful compaction necessarily creates one new cache root. After that transition, the proxy preserves an append-only suffix so subsequent turns can return to normal prefix-cache reuse.
+
+A large uncached portion on the first request of a new worker can be normal: its system prompt, tool envelope, or branch prefix differs from existing workers. Persistent misses on an unchanged lane are not normal and are highlighted by the monitor.
+
+## Observability TUI
+
+The TUI Logs view defaults to a fixed-header request table:
+
+| Provider | Model | Effort | Input | Output | Cache read | Cache write | Cache read % | Cost in | Cost out | Cost cache |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+
+- Cache misses and low-reuse rows are red.
+- Compaction rows are magenta unless a miss takes precedence.
+- The fixed summary row counts requests, input/output tokens, strict misses, low-reuse requests, successful compactions, lane resets, and estimated cost.
+- Press `v` to switch between the request table and ordinary raw logs.
+
+Cost values are estimates, not subscription charges.
+
+The management endpoint exposes the same metadata-only feed:
+
+```text
+GET /v0/management/observability
+```
+
+### Cache-write compatibility
+
+OpenAI Responses usage may report cached reads while omitting cache-write tokens. Enable the compatibility estimate when Claude Code needs a cache-creation counter:
+
+```yaml
+codex-claude-estimate-cache-write-usage: true
+```
+
+The estimated uncached portion is returned as Anthropic-compatible `cache_creation_input_tokens` and shown with a `~` marker in logs. It is not provider-confirmed and is not charged as cache-write cost. Native Claude cache-write values remain provider-reported.
+
+## Rolling request logs
+
+For bounded diagnostics without retaining every successful prompt:
+
+```yaml
+request-log: true
+request-log-success-summary: true
+request-log-summary-rotation-hours: 5
+request-log-summary-max-files: 48
+error-logs-max-files: 50
+logs-max-total-size-mb: 1024
+```
+
+Successful requests write compact body-free JSONL summaries. Summary files roll on fixed UTC windows and are removed after the retention limit. Failed requests keep a full diagnostic log.
+
+Full error logs may contain prompts, source code, tool inputs/results, and response content. Treat the entire log directory as sensitive.
+
+## Useful configuration
+
+Optional picker labels can be added without replacing the native class mapping:
+
+```yaml
+oauth-model-alias:
+  codex:
+    - name: gpt-5.6-sol
+      alias: claude-codex-opus
+      fork: true
+    - name: gpt-5.6-terra
+      alias: claude-codex-sonnet
+      fork: true
+    - name: gpt-5.6-luna
+      alias: claude-codex-haiku
+      fork: true
+  claude:
+    - name: claude-fable-5
+      alias: claude-native-fable
+      fork: true
+```
+
+Leave `force-mapping` disabled for this setup. The class environment variables installed by `claude-codex` remain the primary Opus/Sonnet/Haiku mapping.
+
+## Security notes
+
+- Bind to `127.0.0.1` unless remote access is explicitly required.
+- Use a random local `api-keys` value even for a loopback-only proxy.
+- Keep `config.yaml`, `.env`, OAuth auth files, compaction state, logs, and built binaries out of Git.
+- Review full error logs before sharing bug reports.
+- The alias installer never prints the local proxy key and does not contain provider OAuth credentials.
+- The installer does not weaken Claude Code's permission model or alter the native `claude` command.
+- CI scans the repository with Gitleaks before accepting changes.
+
+## Build and test
+
+```bash
+gofmt -w ./path/to/changed.go
+go test ./...
+go build -o test-output ./cmd/server
+```
+
+The CI matrix runs formatting, a checked `go vet` baseline that rejects new diagnostics, tests on Windows and Linux, compilation, and a repository secret scan.
+
+## Releases and versioning
+
+Fork releases use valid SemVer prerelease identifiers tied to the upstream base:
+
+```text
+v<upstream-version>-hybrid.<revision>
+```
+
+For example, the first hybrid release based on upstream `v7.2.73` is `v7.2.73-hybrid.1`.
+
+Releases are created by a manually dispatched workflow from the default branch. The workflow validates the tag, reruns the quality gates, cross-compiles Windows, macOS, and Linux archives, publishes SHA-256 checksums, and attaches a build-provenance attestation.
+
+## Staying compatible with upstream
+
+The fork keeps hybrid changes as focused commits on top of upstream. To refresh a local checkout:
+
+```bash
+git remote add upstream https://github.com/router-for-me/CLIProxyAPI.git
+git fetch upstream
+git rebase upstream/main
+```
+
+Resolve any conflict in the narrow hybrid surface, run the full verification suite, and publish the rebased fork branch with `--force-with-lease` only after reviewing the rewritten history.
+
+See [`FORK.md`](FORK.md) for the fork delta and [`docs/windows-claude-code-hybrid.md`](docs/windows-claude-code-hybrid.md) for deeper implementation and operational detail.
+
+## Credits and license
+
+CLIProxyAPI Hybrid is built on [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) and retains its provider integrations, API surfaces, and license. The hybrid compaction and observability work is maintained as a compatible downstream layer.
+
+Licensed under the [MIT License](LICENSE).

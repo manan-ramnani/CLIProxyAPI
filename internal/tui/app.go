@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -18,7 +19,6 @@ const (
 	tabAuthFiles
 	tabAPIKeys
 	tabOAuth
-	tabUsage
 	tabLogs
 )
 
@@ -40,8 +40,13 @@ type App struct {
 	auth      authTabModel
 	keys      keysTabModel
 	oauth     oauthTabModel
-	usage     usageTabModel
 	logs      logsTabModel
+
+	observability            observabilitySnapshot
+	observabilityErr         error
+	observabilityCursor      uint64
+	observabilityBootID      string
+	observabilityLastSuccess time.Time
 
 	client *Client
 
@@ -50,7 +55,7 @@ type App struct {
 	ready  bool
 
 	// Track which tabs have been initialized (fetched data)
-	initialized [7]bool
+	initialized [6]bool
 }
 
 type authConnectMsg struct {
@@ -81,10 +86,9 @@ func NewApp(port int, secretKey string, hook *LogHook) App {
 		auth:          newAuthTabModel(client),
 		keys:          newKeysTabModel(client),
 		oauth:         newOAuthTabModel(client),
-		usage:         newUsageTabModel(client),
 		logs:          newLogsTabModel(client, hook),
 		client:        client,
-		initialized: [7]bool{
+		initialized: [6]bool{
 			tabDashboard: true,
 			tabLogs:      true,
 		},
@@ -92,7 +96,7 @@ func NewApp(port int, secretKey string, hook *LogHook) App {
 
 	app.refreshTabs()
 	if authRequired {
-		app.initialized = [7]bool{}
+		app.initialized = [6]bool{}
 	}
 	app.setAuthInputPrompt()
 	return app
@@ -102,7 +106,7 @@ func (a App) Init() tea.Cmd {
 	if !a.authenticated {
 		return textinput.Blink
 	}
-	cmds := []tea.Cmd{a.dashboard.Init()}
+	cmds := []tea.Cmd{a.dashboard.Init(), a.fetchObservability}
 	if a.logsEnabled {
 		cmds = append(cmds, a.logs.Init())
 	}
@@ -118,7 +122,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.width > 0 {
 			a.authInput.Width = a.width - 6
 		}
-		contentH := a.height - 4 // tab bar + status bar
+		contentH := a.height - 5 // tab bar + summary row + status bar
 		if contentH < 1 {
 			contentH = 1
 		}
@@ -128,7 +132,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.auth.SetSize(contentW, contentH)
 		a.keys.SetSize(contentW, contentH)
 		a.oauth.SetSize(contentW, contentH)
-		a.usage.SetSize(contentW, contentH)
 		a.logs.SetSize(contentW, contentH)
 		return a, nil
 
@@ -140,32 +143,50 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		a.authError = ""
 		a.authenticated = true
-		a.logsEnabled = a.standalone || isLogsEnabledFromConfig(msg.cfg)
+		fileLogsEnabled := isLogsEnabledFromConfig(msg.cfg)
+		a.logsEnabled = true
+		a.logs.SetObservabilityOnly(!a.standalone && !fileLogsEnabled)
 		a.refreshTabs()
-		a.initialized = [7]bool{}
+		a.initialized = [6]bool{}
 		a.initialized[tabDashboard] = true
-		cmds := []tea.Cmd{a.dashboard.Init()}
+		cmds := []tea.Cmd{a.dashboard.Init(), a.fetchObservability}
 		if a.logsEnabled {
 			a.initialized[tabLogs] = true
 			cmds = append(cmds, a.logs.Init())
 		}
 		return a, tea.Batch(cmds...)
 
+	case observabilityPollMsg:
+		a.observabilityErr = msg.err
+		if msg.err == nil {
+			restarted := a.observabilityBootID != "" && msg.snapshot.BootID != "" && a.observabilityBootID != msg.snapshot.BootID
+			if restarted || msg.snapshot.CursorReset {
+				a.observabilityCursor = 0
+				a.logs.ResetObservabilityCursor(msg.snapshot.BootID)
+			}
+			a.observability = msg.snapshot
+			a.observabilityBootID = msg.snapshot.BootID
+			if msg.snapshot.EventGap {
+				a.logs.AddObservabilityGap(msg.snapshot.GapFromSequence, msg.snapshot.GapToSequence)
+			}
+			a.logs.AddObservabilityEvents(msg.snapshot.RecentEvents)
+			a.observabilityCursor = msg.snapshot.NextAfter
+			a.observabilityLastSuccess = time.Now()
+		}
+		return a, waitForObservabilityPoll()
+
+	case observabilityTickMsg:
+		return a, a.fetchObservability
+
 	case configUpdateMsg:
 		var cmdLogs tea.Cmd
 		if !a.standalone && msg.err == nil && msg.path == "logging-to-file" {
 			logsEnabledConfig, okConfig := msg.value.(bool)
 			if okConfig {
-				logsEnabledBefore := a.logsEnabled
-				a.logsEnabled = logsEnabledConfig
-				if logsEnabledBefore != a.logsEnabled {
-					a.refreshTabs()
-				}
-				if !a.logsEnabled {
-					a.initialized[tabLogs] = false
-				}
-				if !logsEnabledBefore && a.logsEnabled {
-					a.initialized[tabLogs] = true
+				wasObservabilityOnly := a.logs.observabilityOnly
+				a.logsEnabled = true
+				a.logs.SetObservabilityOnly(!logsEnabledConfig)
+				if wasObservabilityOnly && logsEnabledConfig {
 					cmdLogs = a.logs.Init()
 				}
 			}
@@ -258,8 +279,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.keys, cmd = a.keys.Update(msg)
 	case tabOAuth:
 		a.oauth, cmd = a.oauth.Update(msg)
-	case tabUsage:
-		a.usage, cmd = a.usage.Update(msg)
 	case tabLogs:
 		a.logs, cmd = a.logs.Update(msg)
 	}
@@ -322,8 +341,6 @@ func (a *App) initTabIfNeeded(_ int) tea.Cmd {
 		return a.keys.Init()
 	case tabOAuth:
 		return a.oauth.Init()
-	case tabUsage:
-		return a.usage.Init()
 	case tabLogs:
 		if !a.logsEnabled {
 			return nil
@@ -360,15 +377,15 @@ func (a App) View() string {
 		sb.WriteString(a.keys.View())
 	case tabOAuth:
 		sb.WriteString(a.oauth.View())
-	case tabUsage:
-		sb.WriteString(a.usage.View())
 	case tabLogs:
 		if a.logsEnabled {
 			sb.WriteString(a.logs.View())
 		}
 	}
 
-	// Status bar
+	// Fixed observability summary and status bars.
+	sb.WriteString("\n")
+	sb.WriteString(a.renderObservabilitySummary())
 	sb.WriteString("\n")
 	sb.WriteString(a.renderStatusBar())
 
@@ -526,10 +543,6 @@ func (a App) broadcastToAllTabs(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, cmd)
 	}
 	a.oauth, cmd = a.oauth.Update(msg)
-	if cmd != nil {
-		cmds = append(cmds, cmd)
-	}
-	a.usage, cmd = a.usage.Update(msg)
 	if cmd != nil {
 		cmds = append(cmds, cmd)
 	}

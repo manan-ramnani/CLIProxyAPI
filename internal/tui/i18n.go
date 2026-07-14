@@ -50,8 +50,8 @@ var locales = map[string]map[string]string{
 // ──────────────────────────────────────────
 // Tab names
 // ──────────────────────────────────────────
-var zhTabNames = []string{"仪表盘", "配置", "认证文件", "API 密钥", "OAuth", "使用统计", "日志"}
-var enTabNames = []string{"Dashboard", "Config", "Auth Files", "API Keys", "OAuth", "Usage", "Logs"}
+var zhTabNames = []string{"仪表盘", "配置", "认证文件", "API 密钥", "OAuth", "日志"}
+var enTabNames = []string{"Dashboard", "Config", "Auth Files", "API Keys", "OAuth", "Logs"}
 
 // TabNames returns tab names in the current locale.
 func TabNames() []string {
@@ -93,6 +93,14 @@ var zhStrings = map[string]string{
 	"auth_gate_connecting":        "正在连接...",
 	"auth_gate_connect_fail":      "连接失败：%s",
 	"auth_gate_password_required": "请输入密码",
+	"summary_requests":            "请求",
+	"summary_input":               "输入",
+	"summary_output":              "输出",
+	"summary_cache_misses":        "缓存未命中",
+	"summary_cache_low_reuse":     "缓存低复用",
+	"summary_compactions":         "压缩",
+	"summary_compaction_resets":   "压缩重置",
+	"summary_estimated_cost":      "预估费用",
 
 	// ── Dashboard ──
 	"dashboard_title":  "📊 仪表盘",
@@ -131,7 +139,6 @@ var zhStrings = map[string]string{
 	"section_quota":     "配额超限处理",
 	"section_routing":   "路由",
 	"section_websocket": "WebSocket",
-	"section_ampcode":   "AMP Code",
 	"section_other":     "其他",
 
 	// ── Auth Files ──
@@ -164,23 +171,27 @@ var zhStrings = map[string]string{
 	"enter_save_esc":     "    Enter: 保存 • Esc: 取消",
 
 	// ── OAuth ──
-	"oauth_title":        "🔐 OAuth 登录",
-	"oauth_select":       "  选择提供商并按 [Enter] 开始 OAuth 登录:",
-	"oauth_help":         "  [↑↓/jk] 导航 • [Enter] 登录 • [Esc] 清除状态",
-	"oauth_initiating":   "⏳ 正在初始化 %s 登录...",
-	"oauth_success":      "认证成功! 请刷新 Auth Files 标签查看新凭证。",
-	"oauth_completed":    "认证流程已完成。",
-	"oauth_failed":       "认证失败",
-	"oauth_timeout":      "OAuth 流程超时 (5 分钟)",
-	"oauth_press_esc":    "  按 [Esc] 取消",
-	"oauth_auth_url":     "  授权链接:",
-	"oauth_remote_hint":  "  远程浏览器模式：在浏览器中打开上述链接完成授权后，将回调 URL 粘贴到下方。",
-	"oauth_callback_url": "  回调 URL:",
-	"oauth_press_c":      "  按 [c] 输入回调 URL • [Esc] 返回",
-	"oauth_submitting":   "⏳ 提交回调中...",
-	"oauth_submit_ok":    "✓ 回调已提交，等待处理...",
-	"oauth_submit_fail":  "✗ 提交回调失败",
-	"oauth_waiting":      "  等待认证中...",
+	"oauth_title":          "🔐 OAuth 登录",
+	"oauth_select":         "  选择提供商并按 [Enter] 开始 OAuth 登录:",
+	"oauth_help":           "  [↑↓/jk] 导航 • [Enter] 登录 • [Esc] 清除状态",
+	"oauth_initiating":     "⏳ 正在初始化 %s 登录...",
+	"oauth_success":        "认证成功! 请刷新 Auth Files 标签查看新凭证。",
+	"oauth_completed":      "认证流程已完成。",
+	"oauth_failed":         "认证失败",
+	"oauth_timeout":        "OAuth 流程超时",
+	"oauth_status_error":   "无法查询 OAuth 状态",
+	"oauth_press_esc":      "  按 [Esc] 取消",
+	"oauth_auth_url":       "  授权链接:",
+	"oauth_remote_hint":    "  远程浏览器模式：在浏览器中打开上述链接完成授权后，将回调 URL 粘贴到下方。",
+	"oauth_callback_url":   "  回调 URL:",
+	"oauth_press_c":        "  按 [c] 输入回调 URL • [Esc] 返回",
+	"oauth_submitting":     "⏳ 提交回调中...",
+	"oauth_submit_ok":      "✓ 回调已提交，等待处理...",
+	"oauth_submit_fail":    "✗ 提交回调失败",
+	"oauth_waiting":        "  等待认证中...",
+	"oauth_user_code":      "  用户码:",
+	"oauth_device_hint":    "  设备码登录：在浏览器打开上述链接并确认授权，无需粘贴回调 URL。",
+	"oauth_device_expires": "  设备码将在 %d 秒后过期。",
 
 	// ── Usage ──
 	"usage_title":         "📈 使用统计",
@@ -204,13 +215,18 @@ var zhStrings = map[string]string{
 	"usage_time":          "时间",
 
 	// ── Logs ──
-	"logs_title":       "📋 日志",
-	"logs_auto_scroll": "● 自动滚动",
-	"logs_paused":      "○ 已暂停",
-	"logs_filter":      "过滤",
-	"logs_lines":       "行数",
-	"logs_help":        " [a] 自动滚动 • [c] 清除 • [1] 全部 [2] info+ [3] warn+ [4] error • [↑↓] 滚动",
-	"logs_waiting":     "  等待日志输出...",
+	"logs_title":         "📋 日志",
+	"logs_auto_scroll":   "● 自动滚动",
+	"logs_paused":        "○ 已暂停",
+	"logs_filter":        "过滤",
+	"logs_lines":         "行数",
+	"logs_view":          "视图",
+	"logs_view_requests": "请求",
+	"logs_view_raw":      "原始日志",
+	"logs_requests":      "请求",
+	"logs_no_matches":    "  没有符合当前过滤条件的请求。",
+	"logs_help":          " [v] 请求/原始日志 • [a] 自动滚动 • [c] 清除 • [1] 全部 [2] info+ [3] warn+ [4] error • [↑↓] 滚动",
+	"logs_waiting":       "  等待日志输出...",
 }
 
 var enStrings = map[string]string{
@@ -245,6 +261,14 @@ var enStrings = map[string]string{
 	"auth_gate_connecting":        "Connecting...",
 	"auth_gate_connect_fail":      "Connection failed: %s",
 	"auth_gate_password_required": "password is required",
+	"summary_requests":            "Requests",
+	"summary_input":               "In",
+	"summary_output":              "Out",
+	"summary_cache_misses":        "Cache misses",
+	"summary_cache_low_reuse":     "Low cache reuse",
+	"summary_compactions":         "Compactions",
+	"summary_compaction_resets":   "Compaction resets",
+	"summary_estimated_cost":      "Est. cost",
 
 	// ── Dashboard ──
 	"dashboard_title":  "📊 Dashboard",
@@ -283,7 +307,6 @@ var enStrings = map[string]string{
 	"section_quota":     "Quota Exceeded Handling",
 	"section_routing":   "Routing",
 	"section_websocket": "WebSocket",
-	"section_ampcode":   "AMP Code",
 	"section_other":     "Other",
 
 	// ── Auth Files ──
@@ -316,23 +339,27 @@ var enStrings = map[string]string{
 	"enter_save_esc":     "    Enter: Save • Esc: Cancel",
 
 	// ── OAuth ──
-	"oauth_title":        "🔐 OAuth Login",
-	"oauth_select":       "  Select a provider and press [Enter] to start OAuth login:",
-	"oauth_help":         "  [↑↓/jk] Navigate • [Enter] Login • [Esc] Clear status",
-	"oauth_initiating":   "⏳ Initiating %s login...",
-	"oauth_success":      "Authentication successful! Refresh Auth Files tab to see the new credential.",
-	"oauth_completed":    "Authentication flow completed.",
-	"oauth_failed":       "Authentication failed",
-	"oauth_timeout":      "OAuth flow timed out (5 minutes)",
-	"oauth_press_esc":    "  Press [Esc] to cancel",
-	"oauth_auth_url":     "  Authorization URL:",
-	"oauth_remote_hint":  "  Remote browser mode: Open the URL above in browser, paste the callback URL below after authorization.",
-	"oauth_callback_url": "  Callback URL:",
-	"oauth_press_c":      "  Press [c] to enter callback URL • [Esc] to go back",
-	"oauth_submitting":   "⏳ Submitting callback...",
-	"oauth_submit_ok":    "✓ Callback submitted, waiting...",
-	"oauth_submit_fail":  "✗ Callback submission failed",
-	"oauth_waiting":      "  Waiting for authentication...",
+	"oauth_title":          "🔐 OAuth Login",
+	"oauth_select":         "  Select a provider and press [Enter] to start OAuth login:",
+	"oauth_help":           "  [↑↓/jk] Navigate • [Enter] Login • [Esc] Clear status",
+	"oauth_initiating":     "⏳ Initiating %s login...",
+	"oauth_success":        "Authentication successful! Refresh Auth Files tab to see the new credential.",
+	"oauth_completed":      "Authentication flow completed.",
+	"oauth_failed":         "Authentication failed",
+	"oauth_timeout":        "OAuth flow timed out",
+	"oauth_status_error":   "Failed to query OAuth status",
+	"oauth_press_esc":      "  Press [Esc] to cancel",
+	"oauth_auth_url":       "  Authorization URL:",
+	"oauth_remote_hint":    "  Remote browser mode: Open the URL above in browser, paste the callback URL below after authorization.",
+	"oauth_callback_url":   "  Callback URL:",
+	"oauth_press_c":        "  Press [c] to enter callback URL • [Esc] to go back",
+	"oauth_submitting":     "⏳ Submitting callback...",
+	"oauth_submit_ok":      "✓ Callback submitted, waiting...",
+	"oauth_submit_fail":    "✗ Callback submission failed",
+	"oauth_waiting":        "  Waiting for authentication...",
+	"oauth_user_code":      "  User code:",
+	"oauth_device_hint":    "  Device-code login: open the URL above and approve access. No callback URL paste is required.",
+	"oauth_device_expires": "  Device code expires in %d seconds.",
 
 	// ── Usage ──
 	"usage_title":         "📈 Usage Statistics",
@@ -356,11 +383,16 @@ var enStrings = map[string]string{
 	"usage_time":          "Time",
 
 	// ── Logs ──
-	"logs_title":       "📋 Logs",
-	"logs_auto_scroll": "● AUTO-SCROLL",
-	"logs_paused":      "○ PAUSED",
-	"logs_filter":      "Filter",
-	"logs_lines":       "Lines",
-	"logs_help":        " [a] Auto-scroll • [c] Clear • [1] All [2] info+ [3] warn+ [4] error • [↑↓] Scroll",
-	"logs_waiting":     "  Waiting for log output...",
+	"logs_title":         "📋 Logs",
+	"logs_auto_scroll":   "● AUTO-SCROLL",
+	"logs_paused":        "○ PAUSED",
+	"logs_filter":        "Filter",
+	"logs_lines":         "Lines",
+	"logs_view":          "View",
+	"logs_view_requests": "REQUESTS",
+	"logs_view_raw":      "RAW",
+	"logs_requests":      "Requests",
+	"logs_no_matches":    "  No requests match this filter.",
+	"logs_help":          " [v] Requests/Raw • [a] Auto-scroll • [c] Clear • [1] All [2] info+ [3] warn+ [4] error • [↑↓] Scroll",
+	"logs_waiting":       "  Waiting for log output...",
 }
