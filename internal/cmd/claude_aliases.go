@@ -294,6 +294,7 @@ function global:claude-codex {
     $managed = @(
         'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL',
         'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+        'CLAUDE_CODE_SUBAGENT_MODEL',
         'CLAUDE_CODE_ALWAYS_ENABLE_EFFORT', 'CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY',
         'CLAUDE_CODE_MAX_CONTEXT_TOKENS', 'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE', 'DISABLE_AUTO_COMPACT'
     )
@@ -313,8 +314,9 @@ function global:claude-codex {
         $env:ANTHROPIC_AUTH_TOKEN = $script:CLIProxyAPIClaudeKey
         $env:ANTHROPIC_BASE_URL = $script:CLIProxyAPIClaudeBaseURL
         $env:ANTHROPIC_DEFAULT_OPUS_MODEL = 'gpt-5.6-sol'
-        $env:ANTHROPIC_DEFAULT_SONNET_MODEL = 'gpt-5.6-terra'
-        $env:ANTHROPIC_DEFAULT_HAIKU_MODEL = 'gpt-5.6-luna'
+        $env:ANTHROPIC_DEFAULT_SONNET_MODEL = 'claude-grok-4-5'
+        $env:ANTHROPIC_DEFAULT_HAIKU_MODEL = 'claude-composer-2-5-fast'
+        $env:CLAUDE_CODE_SUBAGENT_MODEL = 'gpt-5.6-luna'
         $env:CLAUDE_CODE_ALWAYS_ENABLE_EFFORT = '1'
         $env:CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY = '1'
         & $script:CLIProxyAPIClaudeExecutable @claudeArgs
@@ -356,8 +358,9 @@ claude-codex() {
         ANTHROPIC_AUTH_TOKEN="$_cliproxyapi_claude_key" \
         ANTHROPIC_BASE_URL="$_cliproxyapi_claude_base_url" \
         ANTHROPIC_DEFAULT_OPUS_MODEL=gpt-5.6-sol \
-        ANTHROPIC_DEFAULT_SONNET_MODEL=gpt-5.6-terra \
-        ANTHROPIC_DEFAULT_HAIKU_MODEL=gpt-5.6-luna \
+        ANTHROPIC_DEFAULT_SONNET_MODEL=claude-grok-4-5 \
+        ANTHROPIC_DEFAULT_HAIKU_MODEL=claude-composer-2-5-fast \
+        CLAUDE_CODE_SUBAGENT_MODEL=gpt-5.6-luna \
         CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1 \
         CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1 \
         "$_cliproxyapi_claude_executable" "${cliproxyapi_args[@]}"
@@ -397,8 +400,9 @@ function claude-codex
         ANTHROPIC_AUTH_TOKEN="$_cliproxyapi_claude_key" \
         ANTHROPIC_BASE_URL="$_cliproxyapi_claude_base_url" \
         ANTHROPIC_DEFAULT_OPUS_MODEL=gpt-5.6-sol \
-        ANTHROPIC_DEFAULT_SONNET_MODEL=gpt-5.6-terra \
-        ANTHROPIC_DEFAULT_HAIKU_MODEL=gpt-5.6-luna \
+        ANTHROPIC_DEFAULT_SONNET_MODEL=claude-grok-4-5 \
+        ANTHROPIC_DEFAULT_HAIKU_MODEL=claude-composer-2-5-fast \
+        CLAUDE_CODE_SUBAGENT_MODEL=gpt-5.6-luna \
         CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1 \
         CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1 \
         "$_cliproxyapi_claude_executable" $cliproxyapi_args

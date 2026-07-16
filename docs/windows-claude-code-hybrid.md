@@ -5,12 +5,33 @@
 The native `claude` command is left unchanged. The `claude-codex` function
 points Claude Code at CLIProxyAPI and uses:
 
-| Claude class | Routed model |
-| --- | --- |
-| Opus | `gpt-5.6-sol` |
-| Sonnet | `gpt-5.6-terra` |
-| Haiku | `gpt-5.6-luna` |
-| Fable 5 selected through `/model` | native `claude-fable-5` |
+| Claude class | Routed model | Provider lane |
+| --- | --- | --- |
+| Opus | `gpt-5.6-sol` | Codex (native compaction) |
+| Sonnet | `claude-grok-4-5` → `grok-4.5` | xAI (client compaction, 500k window) |
+| Haiku | `claude-composer-2-5-fast` → `grok-composer-2.5-fast` | xAI (client compaction, 200k window) |
+| Subagents (`CLAUDE_CODE_SUBAGENT_MODEL`) | `gpt-5.6-luna` | Codex (native compaction) |
+| Fable 5 selected through `/model` | native `claude-fable-5` | Claude |
+
+The Sonnet and Haiku classes point at `claude-*` alias IDs that must exist in the
+proxy configuration (see the alias block below). Because the alias appears
+verbatim in the gateway `/v1/models` listing with the real model's
+`max_input_tokens` (500,000 / 200,000), Claude Code sizes its client-side
+auto-compaction to the true Grok windows instead of the ~200k unknown-model
+fallback. Claude Code has no separate "Sonnet 4.6" class slot, so `gpt-5.6-luna`
+rides the subagent override and stays selectable in the picker.
+
+The Grok lane is deliberately client-compacted: the official Grok CLI
+(xai-org/grok-build) has no server-side compaction API and summarizes locally at
+85% of the window, so Claude Code's own compaction is the faithful equivalent.
+Grok conversation identity follows the official client: the proxy sends a stable
+`x-grok-conv-id` header (deterministic per Claude Code session and worker agent)
+for every Grok model, which keeps the backend prefix KV-cache warm across turns.
+Composer models additionally keep their body `prompt_cache_key` session
+isolation. Grok reasoning: Claude Code effort maps to Responses
+`reasoning.effort`, clamped to grok-4.5's `low`/`medium`/`high` (an `xhigh`
+session becomes `high`); `grok-composer-2.5-fast` has no reasoning levels and the
+thinking config is stripped cleanly.
 
 The wrapper sets `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1` so Claude Code sends its
 selected effort even for custom gateway model IDs. It starts at `xhigh` unless
@@ -130,14 +151,27 @@ post-compaction cache root across proxy restarts.
 
 ## Authentication and the `/model` picker
 
-Both Codex and Claude OAuth must be active in the same CLIProxyAPI instance.
-Run the interactive logins from the fork binary when either provider has no
+Codex, Claude, and xAI OAuth must all be active in the same CLIProxyAPI
+instance. Run the interactive logins from the fork binary when a provider has no
 usable auth file:
 
 ```powershell
 .\cli-proxy-api.exe --config .\config.yaml --codex-login
 .\cli-proxy-api.exe --config .\config.yaml --claude-login
+.\cli-proxy-api.exe --config .\config.yaml --xai-login
 ```
+
+A missing xAI auth surfaces as `503 auth_unavailable` on the Sonnet and Haiku
+classes while Opus (Codex) and Fable (Claude) continue to work.
+
+Background-task caveat: Claude Code may route conversation summarization and
+titling through the Haiku class. If a summarization of a very long Codex-lane
+conversation (whose logical transcript can exceed 200k tokens under the virtual
+window) is ever sent to `claude-composer-2-5-fast`, it will overflow composer's
+200k window and that compaction attempt fails. If this appears in practice,
+either point the Haiku class back at a Codex model or lower
+`codex.native-compaction.claude-client-context-window` toward 500000 so client
+compaction fires earlier.
 
 Claude OAuth is what allows native Fable selected inside `/model` to remain on
 Claude. A stale Claude auth file produces `503 auth_unavailable` even when the
@@ -161,6 +195,13 @@ oauth-model-alias:
   claude:
     - name: claude-fable-5
       alias: claude-native-fable
+      fork: true
+  xai:
+    - name: grok-4.5
+      alias: claude-grok-4-5
+      fork: true
+    - name: grok-composer-2.5-fast
+      alias: claude-composer-2-5-fast
       fork: true
 ```
 

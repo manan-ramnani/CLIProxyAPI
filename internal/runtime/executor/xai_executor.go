@@ -933,7 +933,11 @@ func (e *XAIExecutor) prepareResponsesRequestTo(ctx context.Context, req cliprox
 	if errSession != nil {
 		return nil, errSession
 	}
-	if sessionID != "" {
+	// Composer models and explicit client-supplied sessions keep the body
+	// prompt_cache_key. A session derived implicitly from Claude Code headers
+	// follows the official Grok CLI instead, which carries the conversation
+	// identity only in the x-grok-conv-id header.
+	if sessionID != "" && (xaiRequiresIsolatedConversation(baseModel) || xaiExecutionSessionID(req, opts) != "") {
 		body, _ = sjson.SetBytes(body, "prompt_cache_key", sessionID)
 	}
 
@@ -1128,15 +1132,18 @@ func xaiResolveComposerSessionID(ctx context.Context, req cliproxyexecutor.Reque
 	if sessionID := xaiExecutionSessionID(req, opts); sessionID != "" {
 		return sessionID, nil
 	}
-	if !xaiRequiresIsolatedConversation(baseModel) {
-		return "", nil
-	}
+	// Claude Code sessions get a deterministic conversation identity for every
+	// model, mirroring the official Grok CLI which sends a stable x-grok-conv-id
+	// on all requests so the backend prefix cache stays warm across turns.
 	cached, ok, errCache := helps.ClaudeCodePromptCache(ctx, req.Model, req.Payload, opts.Headers)
 	if errCache != nil {
 		return "", errCache
 	}
 	if ok {
 		return cached.ID, nil
+	}
+	if !xaiRequiresIsolatedConversation(baseModel) {
+		return "", nil
 	}
 	return uuid.NewString(), nil
 }

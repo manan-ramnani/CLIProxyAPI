@@ -2885,6 +2885,65 @@ func TestXAIExecutorComposerReusesClaudeCodeSession(t *testing.T) {
 	}
 }
 
+func TestXAIExecutorNonComposerClaudeCodeSessionSetsConvIDOnly(t *testing.T) {
+	exec := NewXAIExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		Provider: "xai",
+		Metadata: map[string]any{"access_token": "xai-token"},
+	}
+	payload := []byte(`{"model":"grok-4.5","metadata":{"user_id":"{\"session_id\":\"cache-session-2\"}"},"input":"hello"}`)
+	req := cliproxyexecutor.Request{Model: "grok-4.5", Payload: payload}
+	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude, Stream: true}
+
+	first, err := exec.prepareResponsesRequest(context.Background(), req, opts, true)
+	if err != nil {
+		t.Fatalf("prepareResponsesRequest first error: %v", err)
+	}
+	second, err := exec.prepareResponsesRequest(context.Background(), req, opts, true)
+	if err != nil {
+		t.Fatalf("prepareResponsesRequest second error: %v", err)
+	}
+
+	if first.sessionID == "" {
+		t.Fatalf("sessionID is empty for Claude Code session on non-composer model")
+	}
+	if second.sessionID != first.sessionID {
+		t.Fatalf("same Claude Code session produced different sessionID: first=%q second=%q", first.sessionID, second.sessionID)
+	}
+	// Non-composer models mirror the official Grok CLI: conversation identity is
+	// header-only, never a body prompt_cache_key.
+	if key := gjson.GetBytes(first.body, "prompt_cache_key").String(); key != "" {
+		t.Fatalf("prompt_cache_key = %q, want empty for non-composer model; body=%s", key, string(first.body))
+	}
+
+	httpReq, errRequest := http.NewRequest(http.MethodPost, "https://example.test/responses", bytes.NewReader(first.body))
+	if errRequest != nil {
+		t.Fatalf("NewRequest() error = %v", errRequest)
+	}
+	applyXAIHeaders(httpReq, auth, "xai-token", true, first.sessionID)
+	if got := httpReq.Header.Get("x-grok-conv-id"); got != first.sessionID {
+		t.Fatalf("x-grok-conv-id = %q, want %q", got, first.sessionID)
+	}
+}
+
+func TestXAIExecutorNonComposerWithoutSessionStaysStateless(t *testing.T) {
+	exec := NewXAIExecutor(&config.Config{})
+	payload := []byte(`{"model":"grok-4.5","input":"hello"}`)
+	req := cliproxyexecutor.Request{Model: "grok-4.5", Payload: payload}
+	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude, Stream: true}
+
+	prepared, err := exec.prepareResponsesRequest(context.Background(), req, opts, true)
+	if err != nil {
+		t.Fatalf("prepareResponsesRequest error: %v", err)
+	}
+	if prepared.sessionID != "" {
+		t.Fatalf("sessionID = %q, want empty without a Claude Code session", prepared.sessionID)
+	}
+	if key := gjson.GetBytes(prepared.body, "prompt_cache_key").String(); key != "" {
+		t.Fatalf("prompt_cache_key = %q, want empty; body=%s", key, string(prepared.body))
+	}
+}
+
 func TestXAIExecutorComposerSeparatesClaudeAgentsWithinSession(t *testing.T) {
 	exec := NewXAIExecutor(&config.Config{})
 	payload := []byte(`{"model":"grok-composer-2.5-fast","metadata":{"user_id":"{\"session_id\":\"shared-composer-session\"}"},"input":"hello"}`)
