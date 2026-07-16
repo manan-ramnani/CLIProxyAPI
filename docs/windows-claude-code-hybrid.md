@@ -62,16 +62,16 @@ upgrade every `xhigh` request to `max`.
 
 The wrapper temporarily removes Claude Code's client-side compaction overrides
 only for `claude-codex`. This lets the proxy trigger Codex-native compaction at
-334,800 logical input tokens and enforce a 372,000-token hard boundary — the
-gpt-5.6 family context window from the official Codex CLI catalog, whose client
-auto-compacts at 90%. (Older gpt-5.5/5.4 models have a 272,000-token window; if
-they are routed through the same instance, keep the smaller bounds instead.)
+240,000 logical input tokens and enforce a 272,000-token hard boundary. The
+gpt-5.6 family launched with a 372,000-token window (still listed in older Codex
+CLI catalogs) but was rolled back server-side to 272,000; use the smaller,
+verified bound.
 Normal `claude` retains its native Claude/Fable context and compaction behavior.
 
 When native compaction is enabled, the Anthropic `/v1/models` response reports
 a virtual 1,000,000-token input window for models supplied by the Codex
 provider. This delays Claude Code's client compaction while the proxy repeatedly
-compacts at the real 334,800-token trigger. Native Claude/Fable entries keep
+compacts at the real 240,000-token trigger. Native Claude/Fable entries keep
 their provider-reported window, so selecting Fable in the same `/model` picker
 still uses Claude Code's normal client compaction.
 
@@ -86,8 +86,8 @@ Add this block to the canonical YAML configuration:
 codex:
   native-compaction:
     enabled: true
-    trigger-tokens: 334800
-    context-window: 372000
+    trigger-tokens: 240000
+    context-window: 272000
     claude-client-context-window: 1000000
     preserve-recent-tokens: 32000
     retained-message-tokens: 64000
