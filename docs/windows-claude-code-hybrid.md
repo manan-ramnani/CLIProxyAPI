@@ -10,7 +10,7 @@ points Claude Code at CLIProxyAPI and uses:
 | Opus | `gpt-5.6-sol` | Codex (native compaction) |
 | Sonnet | `claude-grok-4-5` → `grok-4.5` | xAI (client compaction, 500k window) |
 | Haiku | `claude-composer-2-5-fast` → `grok-composer-2.5-fast` | xAI (client compaction, 200k window) |
-| Subagents (`CLAUDE_CODE_SUBAGENT_MODEL`) | `gpt-5.6-luna` | Codex (native compaction) |
+| Subagents / workers | inherit main model, or any gateway model per agent | per chosen model |
 | Fable 5 selected through `/model` | native `claude-fable-5` | Claude |
 
 The Sonnet and Haiku classes point at `claude-*` alias IDs that must exist in the
@@ -18,8 +18,18 @@ proxy configuration (see the alias block below). Because the alias appears
 verbatim in the gateway `/v1/models` listing with the real model's
 `max_input_tokens` (500,000 / 200,000), Claude Code sizes its client-side
 auto-compaction to the true Grok windows instead of the ~200k unknown-model
-fallback. Claude Code has no separate "Sonnet 4.6" class slot, so `gpt-5.6-luna`
-rides the subagent override and stays selectable in the picker.
+fallback.
+
+Subagent and teammate models stay a free per-agent choice. The wrapper
+deliberately scrubs `CLAUDE_CODE_SUBAGENT_MODEL`: that variable outranks both an
+agent's `model:` frontmatter and per-spawn model selection, so leaving it set
+would pin every worker to one model. Without it, a subagent inherits the main
+conversation's model unless a `.claude/agents/*.md` definition or an explicit
+in-conversation request names another one — any ID the gateway serves works,
+including `gpt-5.6-luna`, `gpt-5.6-terra`, the class aliases, `claude-grok-4-5`,
+or native `claude-fable-5`. Every worker keeps its own cache and compaction lane
+regardless of the model it runs, because lane identity includes the agent header
+and the exact requested model.
 
 The Grok lane is deliberately client-compacted: the official Grok CLI
 (xai-org/grok-build) has no server-side compaction API and summarizes locally at

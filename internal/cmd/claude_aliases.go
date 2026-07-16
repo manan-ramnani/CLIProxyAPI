@@ -311,12 +311,14 @@ function global:claude-codex {
         Remove-Item Env:\CLAUDE_CODE_MAX_CONTEXT_TOKENS -ErrorAction SilentlyContinue
         Remove-Item Env:\CLAUDE_AUTOCOMPACT_PCT_OVERRIDE -ErrorAction SilentlyContinue
         Remove-Item Env:\DISABLE_AUTO_COMPACT -ErrorAction SilentlyContinue
+        # Never pin subagents to one model: CLAUDE_CODE_SUBAGENT_MODEL overrides
+        # per-agent frontmatter and per-spawn choices, so it must stay unset.
+        Remove-Item Env:\CLAUDE_CODE_SUBAGENT_MODEL -ErrorAction SilentlyContinue
         $env:ANTHROPIC_AUTH_TOKEN = $script:CLIProxyAPIClaudeKey
         $env:ANTHROPIC_BASE_URL = $script:CLIProxyAPIClaudeBaseURL
         $env:ANTHROPIC_DEFAULT_OPUS_MODEL = 'gpt-5.6-sol'
         $env:ANTHROPIC_DEFAULT_SONNET_MODEL = 'claude-grok-4-5'
         $env:ANTHROPIC_DEFAULT_HAIKU_MODEL = 'claude-composer-2-5-fast'
-        $env:CLAUDE_CODE_SUBAGENT_MODEL = 'gpt-5.6-luna'
         $env:CLAUDE_CODE_ALWAYS_ENABLE_EFFORT = '1'
         $env:CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY = '1'
         & $script:CLIProxyAPIClaudeExecutable @claudeArgs
@@ -355,12 +357,12 @@ claude-codex() {
         -u CLAUDE_CODE_MAX_CONTEXT_TOKENS \
         -u CLAUDE_AUTOCOMPACT_PCT_OVERRIDE \
         -u DISABLE_AUTO_COMPACT \
+        -u CLAUDE_CODE_SUBAGENT_MODEL \
         ANTHROPIC_AUTH_TOKEN="$_cliproxyapi_claude_key" \
         ANTHROPIC_BASE_URL="$_cliproxyapi_claude_base_url" \
         ANTHROPIC_DEFAULT_OPUS_MODEL=gpt-5.6-sol \
         ANTHROPIC_DEFAULT_SONNET_MODEL=claude-grok-4-5 \
         ANTHROPIC_DEFAULT_HAIKU_MODEL=claude-composer-2-5-fast \
-        CLAUDE_CODE_SUBAGENT_MODEL=gpt-5.6-luna \
         CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1 \
         CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1 \
         "$_cliproxyapi_claude_executable" "${cliproxyapi_args[@]}"
@@ -397,12 +399,12 @@ function claude-codex
         -u CLAUDE_CODE_MAX_CONTEXT_TOKENS \
         -u CLAUDE_AUTOCOMPACT_PCT_OVERRIDE \
         -u DISABLE_AUTO_COMPACT \
+        -u CLAUDE_CODE_SUBAGENT_MODEL \
         ANTHROPIC_AUTH_TOKEN="$_cliproxyapi_claude_key" \
         ANTHROPIC_BASE_URL="$_cliproxyapi_claude_base_url" \
         ANTHROPIC_DEFAULT_OPUS_MODEL=gpt-5.6-sol \
         ANTHROPIC_DEFAULT_SONNET_MODEL=claude-grok-4-5 \
         ANTHROPIC_DEFAULT_HAIKU_MODEL=claude-composer-2-5-fast \
-        CLAUDE_CODE_SUBAGENT_MODEL=gpt-5.6-luna \
         CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1 \
         CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1 \
         "$_cliproxyapi_claude_executable" $cliproxyapi_args
