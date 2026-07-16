@@ -1002,6 +1002,27 @@ func appendCodexBetaFeature(headers http.Header, feature string) {
 	headers.Set("X-Codex-Beta-Features", current+","+feature)
 }
 
+// codexIsCompactionItemType reports whether t is an opaque compaction item
+// type. Older Codex deployments emit "compaction" and newer ones emit
+// "compaction_summary"; the official client accepts both and re-serializes
+// them as "compaction" when replaying history.
+func codexIsCompactionItemType(t string) bool {
+	return t == "compaction" || t == "compaction_summary"
+}
+
+// codexNormalizeCompactionItem rewrites accepted compaction item aliases to
+// the canonical "compaction" type used on the request input side.
+func codexNormalizeCompactionItem(item []byte) []byte {
+	if gjson.GetBytes(item, "type").String() == "compaction" {
+		return item
+	}
+	normalized, err := sjson.SetBytes(item, "type", "compaction")
+	if err != nil {
+		return item
+	}
+	return normalized
+}
+
 func parseCodexRemoteCompactionV2(data []byte) ([]byte, int64, int64, error) {
 	var compactionItems [][]byte
 	var completed []byte
@@ -1013,8 +1034,8 @@ func parseCodexRemoteCompactionV2(data []byte) ([]byte, int64, int64, error) {
 		switch gjson.GetBytes(eventData, "type").String() {
 		case "response.output_item.done":
 			item := gjson.GetBytes(eventData, "item")
-			if item.Exists() && item.Type == gjson.JSON && item.Get("type").String() == "compaction" {
-				compactionItems = append(compactionItems, []byte(item.Raw))
+			if item.Exists() && item.Type == gjson.JSON && codexIsCompactionItemType(item.Get("type").String()) {
+				compactionItems = append(compactionItems, codexNormalizeCompactionItem([]byte(item.Raw)))
 			}
 		case "response.completed":
 			completed = append([]byte(nil), eventData...)
@@ -1027,8 +1048,8 @@ func parseCodexRemoteCompactionV2(data []byte) ([]byte, int64, int64, error) {
 	}
 	if len(compactionItems) == 0 {
 		for _, item := range gjson.GetBytes(completed, "response.output").Array() {
-			if item.Get("type").String() == "compaction" {
-				compactionItems = append(compactionItems, []byte(item.Raw))
+			if codexIsCompactionItemType(item.Get("type").String()) {
+				compactionItems = append(compactionItems, codexNormalizeCompactionItem([]byte(item.Raw)))
 			}
 		}
 	}
@@ -1053,13 +1074,15 @@ func parseCodexLegacyCompaction(data []byte) ([][]byte, error) {
 		if item.Type != gjson.JSON {
 			return nil, codexCompactionProtocolError{message: "legacy Codex compaction output contains a non-object item"}
 		}
-		items = append(items, []byte(item.Raw))
-		if item.Get("type").String() == "compaction" {
+		raw := []byte(item.Raw)
+		if codexIsCompactionItemType(item.Get("type").String()) {
 			compactionItems++
 			if strings.TrimSpace(item.Get("encrypted_content").String()) == "" {
 				return nil, codexCompactionProtocolError{message: "legacy Codex compaction returned an empty encrypted_content"}
 			}
+			raw = codexNormalizeCompactionItem(raw)
 		}
+		items = append(items, raw)
 	}
 	if compactionItems != 1 {
 		return nil, codexCompactionProtocolError{message: fmt.Sprintf("legacy Codex compaction expected exactly one compaction item, got %d", compactionItems)}

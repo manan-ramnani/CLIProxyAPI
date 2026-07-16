@@ -403,6 +403,45 @@ func TestParseCodexLegacyCompactionPreservesCompleteOutput(t *testing.T) {
 	}
 }
 
+func TestParseCodexRemoteCompactionV2AcceptsCompactionSummaryAlias(t *testing.T) {
+	stream := []byte("data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"compaction_summary\",\"encrypted_content\":\"opaque\"}}\n" +
+		"data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":8,\"output_tokens\":2}}}\n")
+	item, input, output, err := parseCodexRemoteCompactionV2(stream)
+	if err != nil {
+		t.Fatalf("parse compaction_summary stream: %v", err)
+	}
+	if input != 8 || output != 2 {
+		t.Fatalf("usage = %d/%d, want 8/2", input, output)
+	}
+	// Aliases are normalized to the canonical request-side type.
+	if got := gjson.GetBytes(item, "type").String(); got != "compaction" {
+		t.Fatalf("item type = %q, want compaction; item=%s", got, item)
+	}
+	if gjson.GetBytes(item, "encrypted_content").String() != "opaque" {
+		t.Fatalf("encrypted_content lost during normalization: %s", item)
+	}
+
+	fallback := []byte("data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":1},\"output\":[{\"type\":\"compaction_summary\",\"encrypted_content\":\"tail\"}]}}\n")
+	item, _, _, err = parseCodexRemoteCompactionV2(fallback)
+	if err != nil {
+		t.Fatalf("parse compaction_summary fallback output: %v", err)
+	}
+	if got := gjson.GetBytes(item, "type").String(); got != "compaction" {
+		t.Fatalf("fallback item type = %q, want compaction; item=%s", got, item)
+	}
+}
+
+func TestParseCodexLegacyCompactionAcceptsCompactionSummaryAlias(t *testing.T) {
+	data := []byte(`{"output":[{"type":"compaction_summary","encrypted_content":"opaque"}]}`)
+	items, err := parseCodexLegacyCompaction(data)
+	if err != nil {
+		t.Fatalf("parse legacy compaction_summary: %v", err)
+	}
+	if len(items) != 1 || gjson.GetBytes(items[0], "type").String() != "compaction" {
+		t.Fatalf("legacy alias was not normalized: %s", codexJSONItems(items))
+	}
+}
+
 func TestCountCodexInputTokensConservativelyAccountsForOpaqueReasoningAndImages(t *testing.T) {
 	enc, err := tokenizerForCodexModel("gpt-5.6-sol")
 	if err != nil {

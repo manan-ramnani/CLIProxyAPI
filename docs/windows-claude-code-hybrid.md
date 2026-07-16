@@ -52,13 +52,16 @@ upgrade every `xhigh` request to `max`.
 
 The wrapper temporarily removes Claude Code's client-side compaction overrides
 only for `claude-codex`. This lets the proxy trigger Codex-native compaction at
-240,000 logical input tokens and enforce a 272,000-token hard boundary. Normal
-`claude` retains its native Claude/Fable context and compaction behavior.
+334,800 logical input tokens and enforce a 372,000-token hard boundary — the
+gpt-5.6 family context window from the official Codex CLI catalog, whose client
+auto-compacts at 90%. (Older gpt-5.5/5.4 models have a 272,000-token window; if
+they are routed through the same instance, keep the smaller bounds instead.)
+Normal `claude` retains its native Claude/Fable context and compaction behavior.
 
 When native compaction is enabled, the Anthropic `/v1/models` response reports
 a virtual 1,000,000-token input window for models supplied by the Codex
 provider. This delays Claude Code's client compaction while the proxy repeatedly
-compacts at the real 240,000-token trigger. Native Claude/Fable entries keep
+compacts at the real 334,800-token trigger. Native Claude/Fable entries keep
 their provider-reported window, so selecting Fable in the same `/model` picker
 still uses Claude Code's normal client compaction.
 
@@ -73,8 +76,8 @@ Add this block to the canonical YAML configuration:
 codex:
   native-compaction:
     enabled: true
-    trigger-tokens: 240000
-    context-window: 272000
+    trigger-tokens: 334800
+    context-window: 372000
     claude-client-context-window: 1000000
     preserve-recent-tokens: 32000
     retained-message-tokens: 64000
@@ -130,7 +133,8 @@ workers can therefore use different tool envelopes without resetting or
 recompacting one another's history. Headerless requests keep a distinct main
 conversation lane for compatibility with older clients.
 
-If native compaction has a transient failure below 272,000 tokens, the current
+If native compaction has a transient failure below the configured hard
+boundary, the current
 valid lane is sent and a warning is logged. If Codex rejects encrypted state,
 the proxy atomically retires the suspect summary, rebuilds from authoritative
 Claude history, suppresses only implicated reasoning, preserves tool pairs, and
