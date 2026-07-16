@@ -1658,7 +1658,29 @@ func countCodexInputTokens(enc tokenizer.Codec, body []byte) (int64, error) {
 					segments = append(segments, args)
 				}
 			case "function_call_output":
-				if out := strings.TrimSpace(item.Get("output").String()); out != "" {
+				output := item.Get("output")
+				if output.IsArray() {
+					// Structured tool outputs carry image entries as base64 data
+					// URLs. Budget those like other images instead of running
+					// ciphertext-density base64 through the tokenizer, which
+					// overcounts a single screenshot by ~100k tokens.
+					parts := output.Array()
+					for j := range parts {
+						part := parts[j]
+						switch part.Get("type").String() {
+						case "input_image", "image", "image_url":
+							conservativeTokens += 8_192
+						case "input_file", "file":
+							conservativeTokens += 16_384
+						default:
+							if text := strings.TrimSpace(part.Get("text").String()); text != "" {
+								segments = append(segments, text)
+							} else if raw := strings.TrimSpace(part.Raw); raw != "" && raw != "null" {
+								segments = append(segments, raw)
+							}
+						}
+					}
+				} else if out := strings.TrimSpace(output.String()); out != "" {
 					segments = append(segments, out)
 				}
 			case "reasoning":

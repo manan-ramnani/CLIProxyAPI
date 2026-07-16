@@ -462,6 +462,57 @@ func TestCountCodexInputTokensConservativelyAccountsForOpaqueReasoningAndImages(
 	}
 }
 
+func TestCountCodexInputTokensBudgetsToolResultImages(t *testing.T) {
+	enc, err := tokenizerForCodexModel("gpt-5.6-luna")
+	if err != nil {
+		t.Fatalf("tokenizer: %v", err)
+	}
+	base := []byte(`{"input":[{"type":"function_call_output","call_id":"call-1","output":[{"type":"input_text","text":"screenshot captured"}]}]}`)
+	baseTokens, err := countCodexInputTokens(enc, base)
+	if err != nil {
+		t.Fatalf("count base: %v", err)
+	}
+	// A ~200KB base64 screenshot must be budgeted like other images, not
+	// tokenized: raw tokenization would add ~50k+ tokens and permanently trip
+	// the compaction trigger.
+	bigImage := strings.Repeat("iVBORw0KGgoAAAANSUhEUg", 9_000)
+	withImage := []byte(`{"input":[{"type":"function_call_output","call_id":"call-1","output":[{"type":"input_text","text":"screenshot captured"},{"type":"input_image","image_url":"data:image/png;base64,` + bigImage + `"}]}]}`)
+	imageTokens, err := countCodexInputTokens(enc, withImage)
+	if err != nil {
+		t.Fatalf("count with image: %v", err)
+	}
+	if imageTokens < baseTokens+8_192 {
+		t.Fatalf("image budget missing: got %d, want at least %d", imageTokens, baseTokens+8_192)
+	}
+	if imageTokens > baseTokens+8_192+512 {
+		t.Fatalf("image data URL was tokenized: got %d, want about %d", imageTokens, baseTokens+8_192)
+	}
+}
+
+func TestCodexEstimateUpstreamTokensPrefersObservedUsage(t *testing.T) {
+	// Anchored lane: the provider-confirmed count overrides an inflated
+	// tokenizer estimate so a conservative estimator cannot cause per-turn
+	// compaction churn.
+	state := helps.ClaudeCodeCompactionState{
+		ClientInputTokens:    1_200_000,
+		UpstreamInputTokens:  64_000,
+		PendingContextTokens: 20,
+		CompactionTokens:     3_000,
+	}
+	if got := codexEstimateUpstreamTokens(500_000, 1_205_000, state); got != 64_000+5_000+20 {
+		t.Fatalf("anchored estimate = %d, want %d", got, 64_000+5_000+20)
+	}
+	// Shrunken client history (reset-like) falls back to the estimate.
+	if got := codexEstimateUpstreamTokens(500_000, 1_100_000, state); got != 500_000+3_000 {
+		t.Fatalf("negative-delta estimate = %d, want %d", got, 500_000+3_000)
+	}
+	// No observation yet: tokenizer estimate plus recorded compaction tokens.
+	fresh := helps.ClaudeCodeCompactionState{CompactionTokens: 3_000}
+	if got := codexEstimateUpstreamTokens(250_000, 260_000, fresh); got != 253_000 {
+		t.Fatalf("fresh-lane estimate = %d, want 253000", got)
+	}
+}
+
 func TestCodexNativeCompactionParserRequiresOneCompletedItem(t *testing.T) {
 	valid := []byte("data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"compaction\",\"encrypted_content\":\"opaque\"}}\n" +
 		"data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":8,\"output_tokens\":2}}}\n")

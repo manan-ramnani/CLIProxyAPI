@@ -271,13 +271,7 @@ func (e *CodexExecutor) prepareCodexNativeCompaction(
 	if err != nil {
 		return body, codexNativeCompactionScope{}, len(state.ReplacementItems) > 0, fmt.Errorf("codex native compaction: count rewritten input: %w", err)
 	}
-	estimatedUpstreamTokens := rewrittenTokens + state.CompactionTokens
-	if state.UpstreamInputTokens > 0 && state.ClientInputTokens > 0 {
-		delta := clientInputTokens - state.ClientInputTokens
-		if delta >= 0 && state.UpstreamInputTokens+delta+state.PendingContextTokens > estimatedUpstreamTokens {
-			estimatedUpstreamTokens = state.UpstreamInputTokens + delta + state.PendingContextTokens
-		}
-	}
+	estimatedUpstreamTokens := codexEstimateUpstreamTokens(rewrittenTokens, clientInputTokens, state)
 
 	if estimatedUpstreamTokens >= settings.triggerTokens {
 		progress := codexNativeCompactionProgress{
@@ -1000,6 +994,25 @@ func appendCodexBetaFeature(headers http.Header, feature string) {
 		return
 	}
 	headers.Set("X-Codex-Beta-Features", current+","+feature)
+}
+
+// codexEstimateUpstreamTokens sizes the pending upstream request for the
+// compaction trigger. The provider-reported input count from the last observed
+// terminal response is authoritative for what the upstream context actually
+// holds; when it is available and the client history has only grown, the
+// estimate is that observation plus the growth delta. The tokenizer estimate
+// remains only as the fallback for lanes without an observation yet: its
+// deliberately conservative image and ciphertext budgets must not be able to
+// hold the trigger permanently above threshold while real usage is far below.
+func codexEstimateUpstreamTokens(rewrittenTokens, clientInputTokens int64, state helps.ClaudeCodeCompactionState) int64 {
+	estimated := rewrittenTokens + state.CompactionTokens
+	if state.UpstreamInputTokens > 0 && state.ClientInputTokens > 0 {
+		delta := clientInputTokens - state.ClientInputTokens
+		if delta >= 0 {
+			estimated = state.UpstreamInputTokens + delta + state.PendingContextTokens
+		}
+	}
+	return estimated
 }
 
 // codexIsCompactionItemType reports whether t is an opaque compaction item
