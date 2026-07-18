@@ -14,23 +14,15 @@ import (
 const (
 	ClaudeCodeSessionHeader = "X-Claude-Code-Session-Id"
 	ClaudeCodeAgentHeader   = "X-Claude-Code-Agent-Id"
+	ClaudeCodeMainAgentID   = "main"
 )
 
 var claudeCodeSessionSuffixPattern = regexp.MustCompile(`_session_([a-f0-9-]+)$`)
 
 // ExtractClaudeCodeSessionID resolves a Claude Code session ID, preferring X-Claude-Code-Session-Id over payload metadata.
 func ExtractClaudeCodeSessionID(ctx context.Context, payload []byte, headers http.Header) string {
-	if headers != nil {
-		if sessionID := strings.TrimSpace(headers.Get(ClaudeCodeSessionHeader)); sessionID != "" {
-			return sessionID
-		}
-	}
-	if ctx != nil {
-		if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
-			if sessionID := strings.TrimSpace(ginCtx.Request.Header.Get(ClaudeCodeSessionHeader)); sessionID != "" {
-				return sessionID
-			}
-		}
+	if sessionID := claudeCodeHeader(ctx, headers, ClaudeCodeSessionHeader); sessionID != "" {
+		return sessionID
 	}
 	return extractClaudeCodeSessionIDFromPayload(payload)
 }
@@ -39,15 +31,48 @@ func ExtractClaudeCodeSessionID(ctx context.Context, payload []byte, headers htt
 // X-Claude-Code-Agent-Id. An empty result denotes the session's main/headerless
 // lane and preserves compatibility with clients that do not send the header.
 func ExtractClaudeCodeAgentID(ctx context.Context, headers http.Header) string {
-	if headers != nil {
-		if agentID := strings.TrimSpace(headers.Get(ClaudeCodeAgentHeader)); agentID != "" {
-			return agentID
-		}
+	return claudeCodeHeader(ctx, headers, ClaudeCodeAgentHeader)
+}
+
+// ClaudeCodeExecutionScope returns the stable root-session and agent identity used by Codex execution state.
+func ClaudeCodeExecutionScope(ctx context.Context, payload []byte, headers http.Header) (string, bool) {
+	sessionID := ExtractClaudeCodeSessionID(ctx, payload, headers)
+	if sessionID == "" {
+		return "", false
+	}
+	agentID := ExtractClaudeCodeAgentID(ctx, headers)
+	if agentID == "" {
+		agentID = ClaudeCodeMainAgentID
+	}
+	return "claude:" + sessionID + ":agent:" + agentID, true
+}
+
+func claudeCodeHeader(ctx context.Context, headers http.Header, name string) string {
+	if value := headerValueCaseInsensitive(headers, name); value != "" {
+		return value
 	}
 	if ctx != nil {
 		if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
-			if agentID := strings.TrimSpace(ginCtx.Request.Header.Get(ClaudeCodeAgentHeader)); agentID != "" {
-				return agentID
+			return headerValueCaseInsensitive(ginCtx.Request.Header, name)
+		}
+	}
+	return ""
+}
+
+func headerValueCaseInsensitive(headers http.Header, name string) string {
+	if headers == nil {
+		return ""
+	}
+	if value := strings.TrimSpace(headers.Get(name)); value != "" {
+		return value
+	}
+	for key, values := range headers {
+		if !strings.EqualFold(key, name) {
+			continue
+		}
+		for _, value := range values {
+			if value = strings.TrimSpace(value); value != "" {
+				return value
 			}
 		}
 	}
