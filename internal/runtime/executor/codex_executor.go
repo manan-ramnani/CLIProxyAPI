@@ -70,11 +70,16 @@ func collectCodexOutputItemDone(eventData []byte, outputItemsByIndex map[int64][
 		return
 	}
 	outputIndexResult := gjson.GetBytes(eventData, "output_index")
-	if outputIndexResult.Exists() {
-		outputItemsByIndex[outputIndexResult.Int()] = []byte(itemResult.Raw)
-		return
+	item := []byte(itemResult.Raw)
+	*outputItemsFallback = append(*outputItemsFallback, item)
+	if outputIndexResult.Exists() && outputIndexResult.Int() >= 0 {
+		index := outputIndexResult.Int()
+		if _, duplicate := outputItemsByIndex[index]; duplicate {
+			delete(outputItemsByIndex, index)
+		} else {
+			outputItemsByIndex[index] = item
+		}
 	}
-	*outputItemsFallback = append(*outputItemsFallback, []byte(itemResult.Raw))
 }
 
 func patchCodexCompletedOutput(eventData []byte, outputItemsByIndex map[int64][]byte, outputItemsFallback [][]byte) []byte {
@@ -92,11 +97,14 @@ func patchCodexCompletedOutput(eventData []byte, outputItemsByIndex map[int64][]
 		return indexes[i] < indexes[j]
 	})
 
-	items := make([][]byte, 0, len(outputItemsByIndex)+len(outputItemsFallback))
-	for _, idx := range indexes {
-		items = append(items, outputItemsByIndex[idx])
+	items := make([][]byte, 0, len(outputItemsFallback))
+	if len(outputItemsByIndex) == len(outputItemsFallback) {
+		for _, idx := range indexes {
+			items = append(items, outputItemsByIndex[idx])
+		}
+	} else {
+		items = append(items, outputItemsFallback...)
 	}
-	items = append(items, outputItemsFallback...)
 
 	outputArray := []byte("[]")
 	if len(items) > 0 {
@@ -1256,6 +1264,9 @@ func (e *CodexExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth
 }
 
 func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+	if errUnsupported := rejectCodexContextManagement(req, opts); errUnsupported != nil {
+		return resp, errUnsupported
+	}
 	if opts.Alt == "responses/compact" {
 		return e.executeCompact(ctx, auth, req, opts)
 	}
@@ -1406,16 +1417,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		}
 
 		if eventType == "response.output_item.done" {
-			itemResult := gjson.GetBytes(eventData, "item")
-			if !itemResult.Exists() || itemResult.Type != gjson.JSON {
-				continue
-			}
-			outputIndexResult := gjson.GetBytes(eventData, "output_index")
-			if outputIndexResult.Exists() {
-				outputItemsByIndex[outputIndexResult.Int()] = []byte(itemResult.Raw)
-			} else {
-				outputItemsFallback = append(outputItemsFallback, []byte(itemResult.Raw))
-			}
+			collectCodexOutputItemDone(eventData, outputItemsByIndex, &outputItemsFallback)
 			continue
 		}
 
@@ -1429,28 +1431,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		compactionScope.observeTerminal(eventData)
 		publishCodexImageToolUsage(ctx, reporter, body, eventData)
 
-		completedData := eventData
-		outputResult := gjson.GetBytes(completedData, "response.output")
-		shouldPatchOutput := (!outputResult.Exists() || !outputResult.IsArray() || len(outputResult.Array()) == 0) && (len(outputItemsByIndex) > 0 || len(outputItemsFallback) > 0)
-		if shouldPatchOutput {
-			completedDataPatched := completedData
-			completedDataPatched, _ = sjson.SetRawBytes(completedDataPatched, "response.output", []byte(`[]`))
-
-			indexes := make([]int64, 0, len(outputItemsByIndex))
-			for idx := range outputItemsByIndex {
-				indexes = append(indexes, idx)
-			}
-			sort.Slice(indexes, func(i, j int) bool {
-				return indexes[i] < indexes[j]
-			})
-			for _, idx := range indexes {
-				completedDataPatched, _ = sjson.SetRawBytes(completedDataPatched, "response.output.-1", outputItemsByIndex[idx])
-			}
-			for _, item := range outputItemsFallback {
-				completedDataPatched, _ = sjson.SetRawBytes(completedDataPatched, "response.output.-1", item)
-			}
-			completedData = completedDataPatched
-		}
+		completedData := patchCodexCompletedOutput(eventData, outputItemsByIndex, outputItemsFallback)
 		if eventType == "response.completed" {
 			cacheCodexReasoningReplayFromCompleted(replayScope, completedData)
 		}
@@ -1574,6 +1555,9 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 }
 
 func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
+	if errUnsupported := rejectCodexContextManagement(req, opts); errUnsupported != nil {
+		return nil, errUnsupported
+	}
 	if opts.Alt == "responses/compact" {
 		return nil, statusErr{code: http.StatusBadRequest, msg: "streaming not supported for /responses/compact"}
 	}
@@ -1839,6 +1823,20 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	}()
 	compactionScopeOwned = false
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
+}
+
+func rejectCodexContextManagement(req cliproxyexecutor.Request, opts cliproxyexecutor.Options) error {
+	unsupported := gjson.GetBytes(req.Payload, "context_management").Exists()
+	if len(opts.OriginalRequest) > 0 {
+		unsupported = unsupported || gjson.GetBytes(opts.OriginalRequest, "context_management").Exists()
+	}
+	if !unsupported {
+		return nil
+	}
+	return statusErr{
+		code: http.StatusBadRequest,
+		msg:  `{"error":{"message":"Unsupported parameter: 'context_management'.","type":"invalid_request_error","param":"context_management","code":"unsupported_parameter"}}`,
+	}
 }
 
 func (e *CodexExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {

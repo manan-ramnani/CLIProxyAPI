@@ -166,7 +166,12 @@ func (e *CodexExecutor) prepareCodexNativeCompaction(
 	baseModel string,
 	apiKey string,
 	baseURL string,
+	transports ...codexNativeCompactionTransport,
 ) ([]byte, codexNativeCompactionScope, bool, error) {
+	var transport codexNativeCompactionTransport
+	if len(transports) > 0 {
+		transport = transports[0]
+	}
 	settings, enabled := e.nativeCompactionSettings()
 	if !enabled || !sourceFormatEqual(from, sdktranslator.FormatClaude) || auth == nil {
 		return body, codexNativeCompactionScope{}, false, nil
@@ -284,7 +289,7 @@ func (e *CodexExecutor) prepareCodexNativeCompaction(
 		}
 		progress, failedPrefix, compactErr := e.runCodexNativeCompactionPasses(
 			ctx, auth, req, from, opts.Headers, originalPayload, baseModel, apiKey, baseURL,
-			settings, enc, envelopeHash, clientHashes, replayApplication.sourceItems, lane, progress,
+			settings, enc, envelopeHash, clientHashes, replayApplication.sourceItems, lane, progress, transport,
 		)
 		recoveryAttempted := false
 		if codexCompactionErrorIsInvalidReasoning(compactErr) {
@@ -335,7 +340,7 @@ func (e *CodexExecutor) prepareCodexNativeCompaction(
 			}
 			progress, failedPrefix, compactErr = e.runCodexNativeCompactionPasses(
 				ctx, auth, req, from, opts.Headers, originalPayload, baseModel, apiKey, baseURL,
-				settings, enc, envelopeHash, clientHashes, replayApplication.sourceItems, lane, progress,
+				settings, enc, envelopeHash, clientHashes, replayApplication.sourceItems, lane, progress, transport,
 			)
 		}
 		body = progress.body
@@ -426,6 +431,7 @@ func (e *CodexExecutor) runCodexNativeCompactionPasses(
 	replaySourceItems [][]byte,
 	lane *helps.ClaudeCodeCompactionLane,
 	progress codexNativeCompactionProgress,
+	transport codexNativeCompactionTransport,
 ) (codexNativeCompactionProgress, [][]byte, error) {
 	var lastPrefix [][]byte
 	for pass := 1; progress.estimatedUpstreamTokens >= settings.triggerTokens; pass++ {
@@ -480,7 +486,7 @@ func (e *CodexExecutor) runCodexNativeCompactionPasses(
 			lastPrefix = codexCloneItems(progress.effectiveItems[:cut])
 			compactionBody := codexSetInputItems(progress.body, lastPrefix)
 			result, compactErr = e.requestCodexNativeCompaction(
-				ctx, auth, req, from, originalPayload, requestHeaders, compactionBody, baseModel, apiKey, baseURL,
+				ctx, auth, req, from, originalPayload, requestHeaders, compactionBody, baseModel, apiKey, baseURL, transport,
 			)
 			if compactErr == nil || !codexCompactionErrorIsContextLength(compactErr) || replan >= maxCodexNativeCompactionReplans {
 				break
@@ -751,9 +757,13 @@ type codexNativeCompactionResult struct {
 	legacy       bool
 }
 
+type codexNativeCompactionTransport func(context.Context, []byte) (codexNativeCompactionResult, error)
+
 type codexCompactionProtocolError struct{ message string }
 
 func (e codexCompactionProtocolError) Error() string { return e.message }
+
+type codexCompactionCompletedProtocolError struct{ error }
 
 func (e *CodexExecutor) requestCodexNativeCompaction(
 	ctx context.Context,
@@ -766,7 +776,33 @@ func (e *CodexExecutor) requestCodexNativeCompaction(
 	baseModel string,
 	apiKey string,
 	baseURL string,
+	transports ...codexNativeCompactionTransport,
 ) (codexNativeCompactionResult, error) {
+	var transport codexNativeCompactionTransport
+	if len(transports) > 0 {
+		transport = transports[0]
+	}
+	if transport != nil {
+		result, err := transport(ctx, body)
+		if err == nil {
+			return result, nil
+		}
+		if codexShouldFallbackToLegacyCompaction(err) {
+			return e.requestCodexNativeCompactionTransport(ctx, auth, req, from, originalPayload, requestHeaders, body, baseModel, apiKey, baseURL, true)
+		}
+		if !codexShouldRetryV2Compaction(ctx, err) {
+			return codexNativeCompactionResult{}, err
+		}
+		helps.LogWithRequestID(ctx).Warnf("codex native compaction websocket attempt did not complete; falling back to one HTTP v2 attempt: %v", err)
+		result, err = e.requestCodexNativeCompactionTransport(ctx, auth, req, from, originalPayload, requestHeaders, body, baseModel, apiKey, baseURL, false)
+		if err == nil {
+			return result, nil
+		}
+		if codexShouldFallbackToLegacyCompaction(err) {
+			return e.requestCodexNativeCompactionTransport(ctx, auth, req, from, originalPayload, requestHeaders, body, baseModel, apiKey, baseURL, true)
+		}
+		return codexNativeCompactionResult{}, err
+	}
 	result, err := e.requestCodexNativeCompactionTransport(ctx, auth, req, from, originalPayload, requestHeaders, body, baseModel, apiKey, baseURL, false)
 	if err == nil {
 		return result, nil
@@ -793,6 +829,10 @@ func codexShouldRetryV2Compaction(ctx context.Context, err error) bool {
 		return false
 	}
 	if ctx != nil && ctx.Err() != nil {
+		return false
+	}
+	var completedErr codexCompactionCompletedProtocolError
+	if errors.As(err, &completedErr) {
 		return false
 	}
 	var protocolErr codexCompactionProtocolError
@@ -923,12 +963,22 @@ func (e *CodexExecutor) requestCodexNativeCompactionTransport(
 		reporter.Publish(ctx, detail)
 	} else {
 		var item []byte
+		completed := codexCompletedEvent(data)
 		item, result.inputTokens, result.outputTokens, err = parseCodexRemoteCompactionV2(data)
 		if err != nil {
+			if len(completed) > 0 {
+				completedErr := codexCompactionCompletedProtocolError{error: err}
+				if detail, ok := helps.ParseCodexUsage(completed); ok {
+					reporter.PublishFailureWithDetail(ctx, detail, completedErr)
+				} else {
+					reporter.PublishFailure(ctx, completedErr)
+				}
+				return codexNativeCompactionResult{}, completedErr
+			}
 			return codexNativeCompactionResult{}, err
 		}
 		result.items = [][]byte{item}
-		if detail, ok := helps.ParseCodexUsage(codexCompletedEvent(data)); ok {
+		if detail, ok := helps.ParseCodexUsage(completed); ok {
 			reporter.Publish(ctx, detail)
 		}
 	}
@@ -1422,18 +1472,19 @@ func codexRetainedMessages(enc tokenizer.Codec, items [][]byte, tokenBudget int6
 	reversed := make([][]byte, 0)
 	for i := len(items) - 1; i >= 0 && remaining > 0; i-- {
 		item := items[i]
-		if gjson.GetBytes(item, "type").String() != "message" {
+		if gjson.GetBytes(item, "type").String() != "message" || gjson.GetBytes(item, "role").String() != "user" {
 			continue
 		}
-		switch gjson.GetBytes(item, "role").String() {
-		case "user", "developer", "system":
-		default:
-			continue
+		tokens := codexRetainedMessageTextTokens(enc, item)
+		if tokens < 1 {
+			tokens = 1
 		}
-		tokens := codexItemTokens(enc, item)
 		if tokens > remaining {
-			remaining = 0
-			continue
+			item = codexTruncateRetainedMessage(enc, item, remaining)
+			if len(item) > 0 {
+				reversed = append(reversed, item)
+			}
+			break
 		}
 		reversed = append(reversed, append([]byte(nil), item...))
 		remaining -= tokens
@@ -1443,6 +1494,115 @@ func codexRetainedMessages(enc tokenizer.Codec, items [][]byte, tokenBudget int6
 		retained[len(reversed)-1-i] = reversed[i]
 	}
 	return retained
+}
+
+// codexTruncateRetainedMessage keeps the complete message envelope and all
+// non-text content parts while fitting text into the remaining budget. This is
+// based on the Responses role/type provenance available here; Claude contextual
+// wrapper provenance is not recoverable without a broader state machine.
+func codexTruncateRetainedMessage(enc tokenizer.Codec, item []byte, tokenBudget int64) []byte {
+	content := gjson.GetBytes(item, "content")
+	if !content.IsArray() {
+		return nil
+	}
+	remaining := tokenBudget
+	retainedParts := make([]string, 0, len(content.Array()))
+	for _, part := range content.Array() {
+		partType := part.Get("type").String()
+		if partType != "input_text" && partType != "output_text" {
+			retainedParts = append(retainedParts, part.Raw)
+			continue
+		}
+		text := part.Get("text")
+		if !text.Exists() || text.Type != gjson.String {
+			retainedParts = append(retainedParts, part.Raw)
+			continue
+		}
+		if remaining <= 0 {
+			continue
+		}
+		textValue := text.String()
+		textTokens, errCount := enc.Count(textValue)
+		if errCount != nil {
+			textTokens = len([]rune(textValue))
+		}
+		if int64(textTokens) > remaining {
+			textValue = codexTruncateTextToTokens(enc, textValue, remaining)
+			remaining = 0
+		} else {
+			remaining -= int64(textTokens)
+		}
+		if textValue == "" {
+			continue
+		}
+		updatedPart, errSet := sjson.SetBytes([]byte(part.Raw), "text", textValue)
+		if errSet != nil {
+			continue
+		}
+		retainedParts = append(retainedParts, string(updatedPart))
+	}
+	if len(retainedParts) == 0 {
+		return nil
+	}
+	updated, errSet := sjson.SetRawBytes(item, "content", []byte("["+strings.Join(retainedParts, ",")+"]"))
+	if errSet != nil {
+		return nil
+	}
+	return updated
+}
+
+func codexRetainedMessageTextTokens(enc tokenizer.Codec, item []byte) int64 {
+	var total int64
+	for _, part := range gjson.GetBytes(item, "content").Array() {
+		partType := part.Get("type").String()
+		if partType != "input_text" && partType != "output_text" {
+			continue
+		}
+		text := part.Get("text")
+		if !text.Exists() || text.Type != gjson.String {
+			continue
+		}
+		count, errCount := enc.Count(text.String())
+		if errCount != nil {
+			total += int64(len([]rune(text.String())))
+			continue
+		}
+		total += int64(count)
+	}
+	return total
+}
+
+func codexTruncateTextToTokens(enc tokenizer.Codec, text string, tokenBudget int64) string {
+	if tokenBudget <= 0 || text == "" {
+		return ""
+	}
+	runes := []rune(text)
+	marker := "\n…tokens truncated…\n"
+	markerTokens, errMarker := enc.Count(marker)
+	if errMarker != nil || int64(markerTokens) > tokenBudget {
+		marker = ""
+	}
+	best := ""
+	for low, high := 0, len(runes); low <= high; {
+		mid := low + (high-low)/2
+		head := (mid + 1) / 2
+		tail := mid / 2
+		candidate := string(runes[:head]) + marker
+		if tail > 0 {
+			candidate += string(runes[len(runes)-tail:])
+		}
+		count, errCount := enc.Count(candidate)
+		if errCount != nil {
+			count = len([]rune(candidate))
+		}
+		if int64(count) <= tokenBudget {
+			best = candidate
+			low = mid + 1
+		} else {
+			high = mid - 1
+		}
+	}
+	return best
 }
 
 func codexItemTokens(enc tokenizer.Codec, item []byte) int64 {

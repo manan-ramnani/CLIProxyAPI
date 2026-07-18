@@ -392,6 +392,80 @@ func TestCodexNativeCompactionRetriesTransientV2ProtocolFailure(t *testing.T) {
 	}
 }
 
+func TestCodexNativeCompactionCachedTransportFallsBackThroughHTTPV2ToLegacy(t *testing.T) {
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		if r.URL.Path == "/responses" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error":{"message":"remote_compaction_v2 unsupported"}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"output":[{"type":"compaction","encrypted_content":"legacy"}],"usage":{"input_tokens":20,"output_tokens":3}}`)
+	}))
+	defer server.Close()
+
+	executor := NewCodexExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{ID: "auth-cached-fallback", Attributes: map[string]string{"api_key": "test"}}
+	cachedAttempts := 0
+	result, err := executor.requestCodexNativeCompaction(
+		context.Background(), auth,
+		cliproxyexecutor.Request{Model: "gpt-5.6-sol", Payload: []byte(`{"model":"gpt-5.6-sol"}`)},
+		sdktranslator.FormatClaude, []byte(`{"model":"gpt-5.6-sol"}`), nil,
+		[]byte(`{"model":"gpt-5.6-sol","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}`),
+		"gpt-5.6-sol", "test", server.URL,
+		func(context.Context, []byte) (codexNativeCompactionResult, error) {
+			cachedAttempts++
+			return codexNativeCompactionResult{}, codexCompactionProtocolError{message: "cached websocket closed"}
+		},
+	)
+	if err != nil {
+		t.Fatalf("cached fallback: %v", err)
+	}
+	if cachedAttempts != 1 || !result.legacy || len(result.items) != 1 || gjson.GetBytes(result.items[0], "encrypted_content").String() != "legacy" {
+		t.Fatalf("cachedAttempts=%d result=%+v", cachedAttempts, result)
+	}
+	if len(paths) != 2 || paths[0] != "/responses" || paths[1] != "/responses/compact" {
+		t.Fatalf("fallback paths = %v, want [/responses /responses/compact]", paths)
+	}
+}
+
+func TestCodexNativeCompactionMalformedHTTPCompletionIsNotRetriedAndReportsUsage(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"type":"response.output_item.done","item":{"type":"message","id":"not-compaction"}}`+"\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"usage":{"input_tokens":21,"output_tokens":4,"total_tokens":25}}}`+"\n")
+	}))
+	defer server.Close()
+
+	executor := NewCodexExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{ID: "auth-malformed-http-completed", Attributes: map[string]string{"api_key": "test"}}
+	usageCollector := newCodexRetryUsageCollector(auth.ID)
+	usageCollector.operation = "compaction"
+	cliproxyusage.RegisterNamedPlugin("test-codex-malformed-http-completed", usageCollector)
+	_, err := executor.requestCodexNativeCompaction(
+		context.Background(), auth,
+		cliproxyexecutor.Request{Model: "gpt-5.6-sol", Payload: []byte(`{"model":"gpt-5.6-sol"}`)},
+		sdktranslator.FormatClaude, []byte(`{"model":"gpt-5.6-sol"}`), nil,
+		[]byte(`{"model":"gpt-5.6-sol","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}`),
+		"gpt-5.6-sol", "test", server.URL,
+	)
+	if err == nil || codexShouldRetryV2Compaction(context.Background(), err) {
+		t.Fatalf("malformed completed error = %v, want terminal non-retryable error", err)
+	}
+	if requests != 1 {
+		t.Fatalf("HTTP v2 requests = %d, want exactly 1", requests)
+	}
+	records := usageCollector.waitFor(t, 1)
+	if !records[0].Failed || records[0].Detail.InputTokens != 21 || records[0].Detail.OutputTokens != 4 || records[0].Detail.TotalTokens != 25 {
+		t.Fatalf("malformed completion usage = %+v", records[0])
+	}
+	usageCollector.assertNoAdditional(t)
+}
+
 func TestParseCodexLegacyCompactionPreservesCompleteOutput(t *testing.T) {
 	data := []byte(`{"output":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"retained"}]},{"type":"compaction","encrypted_content":"opaque","metadata":{"version":2}}]}`)
 	items, err := parseCodexLegacyCompaction(data)
@@ -514,11 +588,18 @@ func TestCodexEstimateUpstreamTokensPrefersObservedUsage(t *testing.T) {
 }
 
 func TestCodexNativeCompactionParserRequiresOneCompletedItem(t *testing.T) {
-	valid := []byte("data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"compaction\",\"encrypted_content\":\"opaque\"}}\n" +
+	valid := []byte("data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"id\":\"unrelated\"}}\n" +
+		"data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"compaction_summary\",\"id\":\"compact-1\",\"encrypted_content\":\"opaque\",\"metadata\":{\"keep\":null}}}\n" +
 		"data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":8,\"output_tokens\":2}}}\n")
 	item, input, output, err := parseCodexRemoteCompactionV2(valid)
 	if err != nil || gjson.GetBytes(item, "encrypted_content").String() != "opaque" || input != 8 || output != 2 {
 		t.Fatalf("valid parse = item:%s input:%d output:%d err:%v", item, input, output, err)
+	}
+	if got := gjson.GetBytes(item, "type").String(); got != "compaction" {
+		t.Fatalf("normalized type = %q, want compaction; item=%s", got, item)
+	}
+	if got := gjson.GetBytes(item, "id").String(); got != "compact-1" || !gjson.GetBytes(item, "metadata.keep").Exists() || gjson.GetBytes(item, "metadata.keep").Type != gjson.Null {
+		t.Fatalf("opaque fields were not preserved: %s", item)
 	}
 	if _, _, _, err = parseCodexRemoteCompactionV2([]byte("data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"compaction\",\"encrypted_content\":\"opaque\"}}\n")); err == nil {
 		t.Fatal("missing response.completed unexpectedly succeeded")
@@ -1556,8 +1637,9 @@ func TestCodexExecutorHTTPInvalidRetryFailurePublishesOneRecordPerAttempt(t *tes
 }
 
 type codexRetryUsageCollector struct {
-	authID  string
-	records chan cliproxyusage.Record
+	authID    string
+	operation string
+	records   chan cliproxyusage.Record
 }
 
 func newCodexRetryUsageCollector(authID string) *codexRetryUsageCollector {
@@ -1565,7 +1647,7 @@ func newCodexRetryUsageCollector(authID string) *codexRetryUsageCollector {
 }
 
 func (c *codexRetryUsageCollector) HandleUsage(_ context.Context, record cliproxyusage.Record) {
-	if c == nil || record.AuthID != c.authID || record.Operation == "compaction" {
+	if c == nil || record.AuthID != c.authID || (c.operation == "" && record.Operation == "compaction") || (c.operation != "" && record.Operation != c.operation) {
 		return
 	}
 	c.records <- record
@@ -1626,5 +1708,82 @@ func TestCodexNativeCompactionDefaultSettings(t *testing.T) {
 	settings, enabled := executor.nativeCompactionSettings()
 	if !enabled || settings.triggerTokens != 240_000 || settings.contextWindow != 272_000 || settings.preserveRecentTokens != 32_000 || settings.retainedMessageTokens != 64_000 {
 		t.Fatalf("unexpected defaults: enabled=%v settings=%+v", enabled, settings)
+	}
+}
+
+func TestCodexRetainedMessagesKeepsRecentUsersChronologically(t *testing.T) {
+	enc, err := tokenizerForCodexModel("gpt-5.4")
+	if err != nil {
+		t.Fatalf("tokenizer: %v", err)
+	}
+	items := [][]byte{
+		[]byte(`{"type":"message","role":"user","id":"old","content":[{"type":"input_text","text":"old request"}]}`),
+		[]byte(`{"type":"message","role":"developer","id":"developer","content":[{"type":"input_text","text":"instructions"}]}`),
+		[]byte(`{"type":"reasoning","id":"reasoning","encrypted_content":"opaque"}`),
+		[]byte(`{"type":"message","role":"assistant","id":"assistant","content":[{"type":"output_text","text":"answer"}]}`),
+		[]byte(`{"type":"message","role":"user","id":"new","content":[{"type":"input_text","text":"new request"}]}`),
+	}
+
+	retained := codexRetainedMessages(enc, items, 100)
+	if len(retained) != 2 {
+		t.Fatalf("retained messages = %d, want 2", len(retained))
+	}
+	if got := gjson.GetBytes(retained[0], "id").String(); got != "old" {
+		t.Fatalf("retained[0].id = %q, want old", got)
+	}
+	if got := gjson.GetBytes(retained[1], "id").String(); got != "new" {
+		t.Fatalf("retained[1].id = %q, want new", got)
+	}
+}
+
+func TestCodexRetainedMessagesTruncatesBoundaryTextAndPreservesOpaqueParts(t *testing.T) {
+	enc, err := tokenizerForCodexModel("gpt-5.4")
+	if err != nil {
+		t.Fatalf("tokenizer: %v", err)
+	}
+	message := []byte(`{"type":"message","role":"user","id":"boundary","phase":"commentary","metadata":{"trace":"keep"},"content":[{"type":"input_text","text":"one two three four five six seven eight nine ten"},{"type":"input_image","image_url":"data:image/png;base64,AA==","detail":"high"},{"type":"input_text","text":"must be removed"},{"type":"future_media","text":"opaque text must not consume the text budget","opaque":{"keep":null}}]}`)
+
+	retained := codexRetainedMessages(enc, [][]byte{message}, 3)
+	if len(retained) != 1 {
+		t.Fatalf("retained messages = %d, want 1", len(retained))
+	}
+	got := retained[0]
+	if gjson.GetBytes(got, "metadata.trace").String() != "keep" || gjson.GetBytes(got, "phase").String() != "commentary" {
+		t.Fatalf("message envelope changed: %s", got)
+	}
+	parts := gjson.GetBytes(got, "content").Array()
+	if len(parts) != 3 {
+		t.Fatalf("content parts = %d, want truncated text plus two opaque parts: %s", len(parts), got)
+	}
+	if text := parts[0].Get("text").String(); text == "" || text == "one two three four five six seven eight nine ten" {
+		t.Fatalf("boundary text was not truncated: %q", text)
+	}
+	if parts[1].Get("type").String() != "input_image" || parts[1].Get("detail").String() != "high" {
+		t.Fatalf("image part changed: %s", parts[1].Raw)
+	}
+	if parts[2].Get("type").String() != "future_media" || !parts[2].Get("opaque.keep").Exists() || parts[2].Get("opaque.keep").Type != gjson.Null {
+		t.Fatalf("unknown opaque part changed: %s", parts[2].Raw)
+	}
+	if got := parts[2].Get("text").String(); got != "opaque text must not consume the text budget" {
+		t.Fatalf("unknown text-bearing part changed: %q", got)
+	}
+}
+
+func TestCodexTruncateTextToTokensPreservesBothEnds(t *testing.T) {
+	enc, err := tokenizerForCodexModel("gpt-5.4")
+	if err != nil {
+		t.Fatalf("tokenizer: %v", err)
+	}
+	original := "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa"
+	truncated := codexTruncateTextToTokens(enc, original, 12)
+	if !strings.Contains(truncated, "tokens truncated") || !strings.HasPrefix(truncated, "alpha") || !strings.HasSuffix(truncated, "papa") {
+		t.Fatalf("middle truncation did not preserve both ends: %q", truncated)
+	}
+	count, err := enc.Count(truncated)
+	if err != nil {
+		t.Fatalf("count truncated text: %v", err)
+	}
+	if count > 12 {
+		t.Fatalf("truncated token count = %d, want <= 12: %q", count, truncated)
 	}
 }

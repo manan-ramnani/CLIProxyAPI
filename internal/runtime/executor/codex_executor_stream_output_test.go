@@ -49,6 +49,120 @@ func TestCodexExecutorExecute_EmptyStreamCompletionOutputUsesOutputItemDone(t *t
 	}
 }
 
+func TestCodexOutputCollectorPreservesDuplicateAndMixedIndexes(t *testing.T) {
+	tests := []struct {
+		name    string
+		events  []string
+		wantIDs []string
+	}{
+		{
+			name: "unique indexes sort canonically",
+			events: []string{
+				`{"output_index":1,"item":{"id":"one","type":"message"}}`,
+				`{"output_index":0,"item":{"id":"zero","type":"reasoning"}}`,
+			},
+			wantIDs: []string{"zero", "one"},
+		},
+		{
+			name: "duplicate indexes preserve arrival order",
+			events: []string{
+				`{"output_index":0,"item":{"id":"first","type":"reasoning","encrypted_content":"opaque","metadata":{"keep":null}}}`,
+				`{"output_index":0,"item":{"id":"second","type":"compaction","call_id":"call-1"}}`,
+			},
+			wantIDs: []string{"first", "second"},
+		},
+		{
+			name: "mixed indexes preserve arrival order",
+			events: []string{
+				`{"output_index":2,"item":{"id":"indexed","type":"message"}}`,
+				`{"item":{"id":"unindexed","type":"future_item","opaque":{"keep":true}}}`,
+			},
+			wantIDs: []string{"indexed", "unindexed"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			indexed := make(map[int64][]byte)
+			var arrival [][]byte
+			for _, event := range tc.events {
+				collectCodexOutputItemDone([]byte(event), indexed, &arrival)
+			}
+			completed := patchCodexCompletedOutput([]byte(`{"type":"response.completed","response":{"output":[]}}`), indexed, arrival)
+			items := gjson.GetBytes(completed, "response.output").Array()
+			if len(items) != len(tc.wantIDs) {
+				t.Fatalf("output length = %d, want %d: %s", len(items), len(tc.wantIDs), completed)
+			}
+			for index, wantID := range tc.wantIDs {
+				if got := items[index].Get("id").String(); got != wantID {
+					t.Fatalf("output[%d].id = %q, want %q: %s", index, got, wantID, completed)
+				}
+			}
+			if tc.name == "duplicate indexes preserve arrival order" {
+				if !items[0].Get("metadata.keep").Exists() || items[0].Get("metadata.keep").Type != gjson.Null || items[1].Get("call_id").String() != "call-1" {
+					t.Fatalf("opaque fields changed: %s", completed)
+				}
+			}
+		})
+	}
+}
+
+func TestCodexExecutorsRejectContextManagementBeforeUpstream(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requests++
+	}))
+	defer server.Close()
+
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{"base_url": server.URL, "api_key": "test"}}
+	req := cliproxyexecutor.Request{Model: "gpt-5.4-mini", Payload: []byte(`{"model":"gpt-5.4-mini","input":"hello"}`)}
+	opts := cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FromString("openai-response"),
+		OriginalRequest: []byte(`{"model":"gpt-5.4-mini","input":"hello","context_management":[{"type":"compaction"}]}`),
+	}
+	httpExecutor := NewCodexExecutor(&config.Config{})
+	wsExecutor := NewCodexWebsocketsExecutor(&config.Config{})
+
+	checks := []struct {
+		name string
+		run  func() error
+	}{
+		{name: "http nonstream", run: func() error { _, err := httpExecutor.Execute(context.Background(), auth, req, opts); return err }},
+		{name: "http stream", run: func() error { _, err := httpExecutor.ExecuteStream(context.Background(), auth, req, opts); return err }},
+		{name: "websocket nonstream", run: func() error { _, err := wsExecutor.Execute(context.Background(), auth, req, opts); return err }},
+		{name: "websocket stream", run: func() error { _, err := wsExecutor.ExecuteStream(context.Background(), auth, req, opts); return err }},
+	}
+	for _, check := range checks {
+		t.Run(check.name, func(t *testing.T) {
+			err := check.run()
+			if err == nil {
+				t.Fatal("expected unsupported parameter error")
+			}
+			if got := statusCodeFromTestError(t, err); got != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400", got)
+			}
+			if got := gjson.Get(err.Error(), "error.code").String(); got != "unsupported_parameter" {
+				t.Fatalf("error code = %q; error=%v", got, err)
+			}
+			if got := gjson.Get(err.Error(), "error.param").String(); got != "context_management" {
+				t.Fatalf("error param = %q; error=%v", got, err)
+			}
+		})
+	}
+	t.Run("translated payload is also checked", func(t *testing.T) {
+		translatedReq := req
+		translatedReq.Payload = []byte(`{"model":"gpt-5.4-mini","input":"hello","context_management":[{"type":"compaction"}]}`)
+		translatedOpts := opts
+		translatedOpts.OriginalRequest = []byte(`{"model":"gpt-5.4-mini","input":"hello"}`)
+		_, err := httpExecutor.Execute(context.Background(), auth, translatedReq, translatedOpts)
+		if err == nil || statusCodeFromTestError(t, err) != http.StatusBadRequest {
+			t.Fatalf("translated payload error = %v, want HTTP 400", err)
+		}
+	})
+	if requests != 0 {
+		t.Fatalf("upstream requests = %d, want 0", requests)
+	}
+}
+
 func TestCodexExecutorExecuteSurfacesTerminalStreamError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

@@ -1621,11 +1621,16 @@ func collectResponsesWebsocketOutputItem(payload []byte, outputItemsByIndex map[
 		return
 	}
 	outputIndex := gjson.GetBytes(payload, "output_index")
-	if outputIndex.Exists() {
-		outputItemsByIndex[outputIndex.Int()] = bytes.Clone([]byte(item.Raw))
-		return
+	itemRaw := bytes.Clone([]byte(item.Raw))
+	*outputItemsFallback = append(*outputItemsFallback, itemRaw)
+	if outputIndex.Exists() && outputIndex.Int() >= 0 {
+		index := outputIndex.Int()
+		if _, duplicate := outputItemsByIndex[index]; duplicate {
+			delete(outputItemsByIndex, index)
+		} else {
+			outputItemsByIndex[index] = itemRaw
+		}
 	}
-	*outputItemsFallback = append(*outputItemsFallback, bytes.Clone([]byte(item.Raw)))
 }
 
 func restoreResponsesWebsocketCompletionOutput(payload []byte, outputItemsByIndex map[int64][]byte, outputItemsFallback [][]byte) []byte {
@@ -1661,12 +1666,15 @@ func responseCompletedOutputFromPayload(payload []byte, outputItemsByIndex map[i
 		return indexes[i] < indexes[j]
 	})
 
-	items := make([]json.RawMessage, 0, len(outputItemsByIndex)+len(outputItemsFallback))
-	for _, index := range indexes {
-		items = append(items, json.RawMessage(outputItemsByIndex[index]))
-	}
-	for _, item := range outputItemsFallback {
-		items = append(items, json.RawMessage(item))
+	items := make([]json.RawMessage, 0, len(outputItemsFallback))
+	if len(outputItemsByIndex) == len(outputItemsFallback) {
+		for _, index := range indexes {
+			items = append(items, json.RawMessage(outputItemsByIndex[index]))
+		}
+	} else {
+		for _, item := range outputItemsFallback {
+			items = append(items, json.RawMessage(item))
+		}
 	}
 
 	marshaledOutput, errMarshal := json.Marshal(items)

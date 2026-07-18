@@ -3489,11 +3489,32 @@ func TestResponsesWebsocketOutputCollectorRestoresCompletedOutput(t *testing.T) 
 	if len(items) != 3 {
 		t.Fatalf("collected output len = %d, want 3: %s", len(items), output)
 	}
-	wantIDs := []string{"summary-1", "reply-1", "call-1"}
+	// Mixed indexed and unindexed output is ambiguous, so preserve arrival order.
+	wantIDs := []string{"reply-1", "summary-1", "call-1"}
 	for i, wantID := range wantIDs {
 		if got := items[i].Get("id").String(); got != wantID {
 			t.Fatalf("output[%d].id = %q, want %q: %s", i, got, wantID, output)
 		}
+	}
+}
+
+func TestResponsesWebsocketOutputCollectorPreservesDuplicateIndexes(t *testing.T) {
+	indexed := make(map[int64][]byte)
+	var arrival [][]byte
+	for _, payload := range [][]byte{
+		[]byte(`{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"first","encrypted_content":"opaque","metadata":{"keep":null}}}`),
+		[]byte(`{"type":"response.output_item.done","output_index":0,"item":{"type":"future_item","id":"second","call_id":"call-1","opaque":{"enabled":true}}}`),
+	} {
+		collectResponsesWebsocketOutputItem(payload, indexed, &arrival)
+	}
+
+	output := responseCompletedOutputFromPayload([]byte(`{"type":"response.completed","response":{"output":[]}}`), indexed, arrival)
+	items := gjson.ParseBytes(output).Array()
+	if len(items) != 2 || items[0].Get("id").String() != "first" || items[1].Get("id").String() != "second" {
+		t.Fatalf("duplicate-index output was lost or reordered: %s", output)
+	}
+	if !items[0].Get("metadata.keep").Exists() || items[0].Get("metadata.keep").Type != gjson.Null || items[1].Get("call_id").String() != "call-1" || !items[1].Get("opaque.enabled").Bool() {
+		t.Fatalf("opaque fields changed: %s", output)
 	}
 }
 

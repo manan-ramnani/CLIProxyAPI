@@ -64,10 +64,11 @@ type codexWebsocketSession struct {
 
 	reqMu sync.Mutex
 
-	connMu sync.Mutex
-	conn   *websocket.Conn
-	wsURL  string
-	authID string
+	connMu             sync.Mutex
+	conn               *websocket.Conn
+	wsURL              string
+	authID             string
+	remoteCompactionV2 bool
 
 	writeMu sync.Mutex
 
@@ -169,6 +170,107 @@ func (s *codexWebsocketSession) writeMessage(conn *websocket.Conn, msgType int, 
 	return conn.WriteMessage(msgType, payload)
 }
 
+func (e *CodexWebsocketsExecutor) cachedCompactionTransport(
+	sess *codexWebsocketSession,
+	auth *cliproxyauth.Auth,
+	authID string,
+	wsURL string,
+	from sdktranslator.Format,
+	req cliproxyexecutor.Request,
+	opts cliproxyexecutor.Options,
+	originalPayload []byte,
+	baseModel string,
+) codexNativeCompactionTransport {
+	if sess == nil {
+		return nil
+	}
+	sess.connMu.Lock()
+	conn := sess.conn
+	eligible := conn != nil && sess.authID == authID && sess.wsURL == wsURL && sess.remoteCompactionV2
+	sess.connMu.Unlock()
+	if !eligible {
+		return nil
+	}
+	return func(ctx context.Context, body []byte) (result codexNativeCompactionResult, err error) {
+		compactionReporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
+		compactionReporter.SetOperation("compaction")
+		defer compactionReporter.TrackFailure(ctx, &err)
+
+		items, ok := codexInputItems(body)
+		if !ok {
+			return result, codexCompactionProtocolError{message: "codex native compaction: input is not an array"}
+		}
+		items = append(items, []byte(`{"type":"compaction_trigger"}`))
+		body = codexSetInputItems(body, items)
+		body, _ = sjson.SetBytes(body, "stream", true)
+		body, _ = sjson.DeleteBytes(body, "previous_response_id")
+		_, upstreamBody, identityState, errCache := e.cacheHelper(ctx, from, wsURL, auth, req, originalPayload, body, opts.Headers)
+		if errCache != nil {
+			return result, errCache
+		}
+		requestBody := buildCodexWebsocketRequestBody(upstreamBody)
+		readCh := sess.activate(conn)
+		completed := false
+		defer func() {
+			sess.clearActive(conn, readCh)
+			if !completed {
+				e.invalidateUpstreamConnWithoutNotification(sess, conn, "compaction_incomplete", err)
+			}
+		}()
+		if err = writeCodexWebsocketMessage(sess, conn, requestBody); err != nil {
+			return result, err
+		}
+		compactionReporter.StartResponseTTFT()
+		var stream bytes.Buffer
+		for {
+			msgType, payload, errRead := readCodexWebsocketMessage(ctx, sess, conn, readCh)
+			if errRead != nil {
+				return result, mapCodexWebsocketReadError(errRead)
+			}
+			if msgType != websocket.TextMessage {
+				continue
+			}
+			payload = bytes.TrimSpace(payload)
+			compactionReporter.MarkFirstResponseByte()
+			payload = applyCodexIdentityConfuseResponsePayload(payload, identityState)
+			if wsErr, okErr := parseCodexWebsocketError(payload); okErr {
+				return result, wsErr
+			}
+			stream.WriteString("data: ")
+			stream.Write(payload)
+			stream.WriteByte('\n')
+			switch gjson.GetBytes(payload, "type").String() {
+			case "response.failed", "error":
+				if terminalErr, terminalBody, okTerminal := codexTerminalFailureErr(payload); okTerminal {
+					return result, newCodexStatusErr(terminalErr.StatusCode(), terminalBody)
+				}
+				return result, codexCompactionCompletedProtocolError{error: codexCompactionProtocolError{message: "codex native compaction failed: " + string(payload)}}
+			case "response.completed":
+				detail, hasUsage := helps.ParseCodexUsage(payload)
+				item, inputTokens, outputTokens, parseErr := parseCodexRemoteCompactionV2(stream.Bytes())
+				if parseErr != nil {
+					completed = true
+					if hasUsage {
+						compactionReporter.PublishFailureWithDetail(ctx, detail, parseErr)
+					} else {
+						compactionReporter.PublishFailure(ctx, parseErr)
+					}
+					return result, codexCompactionCompletedProtocolError{error: parseErr}
+				}
+				completed = true
+				result.items = [][]byte{item}
+				result.inputTokens = inputTokens
+				result.outputTokens = outputTokens
+				if hasUsage {
+					compactionReporter.Publish(ctx, detail)
+				}
+				compactionReporter.EnsurePublished(ctx)
+				return result, nil
+			}
+		}
+	}
+}
+
 func (s *codexWebsocketSession) configureConn(conn *websocket.Conn) {
 	if s == nil || conn == nil {
 		return
@@ -232,6 +334,9 @@ func (s *codexWebsocketSession) notifyUpstreamDisconnect(err error) {
 }
 
 func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+	if errUnsupported := rejectCodexContextManagement(req, opts); errUnsupported != nil {
+		return resp, errUnsupported
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -276,15 +381,41 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	}
 	body = sanitizeOpenAIResponsesReasoningEncryptedContent(ctx, "codex websockets executor", body)
 	body = normalizeCodexWebsocketParallelToolCalls(body, opts.Headers)
-	body, replayScope, errReplay := applyCodexReasoningReplayCacheRequired(ctx, from, req, opts, body)
-	if errReplay != nil {
-		return resp, errReplay
-	}
 
 	httpURL := strings.TrimSuffix(baseURL, "/") + "/responses"
 	wsURL, err := buildCodexResponsesWebsocketURL(httpURL)
 	if err != nil {
 		return resp, err
+	}
+	var authID, authLabel, authType, authValue string
+	if auth != nil {
+		authID = auth.ID
+		authLabel = auth.Label
+		authType, authValue = auth.AccountInfo()
+	}
+	executionSessionID := executionSessionIDFromOptions(opts)
+	var sess *codexWebsocketSession
+	if executionSessionID != "" {
+		sess = e.getOrCreateSession(executionSessionID)
+		sess.reqMu.Lock()
+		defer sess.reqMu.Unlock()
+	}
+	transport := e.cachedCompactionTransport(sess, auth, authID, wsURL, from, req, opts, originalPayloadSource, baseModel)
+	body, compactionScope, compacted, errCompaction := e.prepareCodexNativeCompaction(ctx, auth, req, from, opts, originalPayloadSource, body, baseModel, apiKey, baseURL, transport)
+	if errCompaction != nil {
+		return resp, errCompaction
+	}
+	defer compactionScope.abandon()
+	replayScope := compactionScope.replayScope
+	if !compactionScope.replayApplied {
+		var errReplay error
+		body, replayScope, errReplay = applyCodexReasoningReplayCacheRequired(ctx, from, req, opts, body)
+		if errReplay != nil {
+			return resp, errReplay
+		}
+	}
+	if compacted {
+		body, _ = sjson.DeleteBytes(body, "previous_response_id")
 	}
 
 	body, wsHeaders, errPromptCache := applyCodexPromptCacheHeadersWithContext(ctx, from, req, body, opts.Headers)
@@ -296,23 +427,11 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	upstreamBody, identityState := applyCodexIdentityConfuseBody(e.cfg, auth, originalPayloadSource, body)
 	reporter.SetTranslatedReasoningEffort(clientBody, to.String())
 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg)
+	if _, nativeCompactionEnabled := e.nativeCompactionSettings(); nativeCompactionEnabled {
+		appendCodexBetaFeature(wsHeaders, codexRemoteCompactionV2Feature)
+	}
 	applyModelHeaderOverrides(wsHeaders, baseModel)
 	applyCodexIdentityConfuseHeaders(wsHeaders, &identityState)
-
-	var authID, authLabel, authType, authValue string
-	if auth != nil {
-		authID = auth.ID
-		authLabel = auth.Label
-		authType, authValue = auth.AccountInfo()
-	}
-
-	executionSessionID := executionSessionIDFromOptions(opts)
-	var sess *codexWebsocketSession
-	if executionSessionID != "" {
-		sess = e.getOrCreateSession(executionSessionID)
-		sess.reqMu.Lock()
-		defer sess.reqMu.Unlock()
-	}
 
 	wsReqBody := buildCodexWebsocketRequestBody(upstreamBody)
 	wsReqLog := helps.UpstreamRequestLog{
@@ -466,6 +585,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 			collectCodexOutputItemDone(payload, outputItemsByIndex, &outputItemsFallback)
 		case "response.completed":
 			payload = patchCodexCompletedOutput(payload, outputItemsByIndex, outputItemsFallback)
+			compactionScope.observeTerminal(payload)
 			cacheCodexReasoningReplayFromCompleted(replayScope, payload)
 			if detail, ok := helps.ParseCodexUsage(payload); ok {
 				reporter.Publish(ctx, detail)
@@ -480,6 +600,9 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 }
 
 func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
+	if errUnsupported := rejectCodexContextManagement(req, opts); errUnsupported != nil {
+		return nil, errUnsupported
+	}
 	log.Debugf("Executing Codex Websockets stream request with auth ID: %s, model: %s", auth.ID, req.Model)
 	if ctx == nil {
 		ctx = context.Background()
@@ -522,15 +645,51 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	}
 	body = sanitizeOpenAIResponsesReasoningEncryptedContent(ctx, "codex websockets executor", body)
 	body = normalizeCodexWebsocketParallelToolCalls(body, opts.Headers)
-	body, replayScope, errReplay := applyCodexReasoningReplayCacheRequired(ctx, from, req, opts, body)
-	if errReplay != nil {
-		return nil, errReplay
-	}
 
 	httpURL := strings.TrimSuffix(baseURL, "/") + "/responses"
 	wsURL, err := buildCodexResponsesWebsocketURL(httpURL)
 	if err != nil {
 		return nil, err
+	}
+	authID := auth.ID
+	authLabel := auth.Label
+	authType, authValue := auth.AccountInfo()
+	executionSessionID := executionSessionIDFromOptions(opts)
+	var sess *codexWebsocketSession
+	if executionSessionID != "" {
+		sess = e.getOrCreateSession(executionSessionID)
+		if sess != nil {
+			sess.reqMu.Lock()
+		}
+	}
+	transport := e.cachedCompactionTransport(sess, auth, authID, wsURL, from, req, opts, originalPayloadSource, baseModel)
+	body, compactionScope, compacted, errCompaction := e.prepareCodexNativeCompaction(ctx, auth, req, from, opts, originalPayloadSource, body, baseModel, apiKey, baseURL, transport)
+	if errCompaction != nil {
+		if sess != nil {
+			sess.reqMu.Unlock()
+		}
+		return nil, errCompaction
+	}
+	releaseBeforeStream := true
+	defer func() {
+		if !releaseBeforeStream {
+			return
+		}
+		compactionScope.abandon()
+		if sess != nil {
+			sess.reqMu.Unlock()
+		}
+	}()
+	replayScope := compactionScope.replayScope
+	if !compactionScope.replayApplied {
+		var errReplay error
+		body, replayScope, errReplay = applyCodexReasoningReplayCacheRequired(ctx, from, req, opts, body)
+		if errReplay != nil {
+			return nil, errReplay
+		}
+	}
+	if compacted {
+		body, _ = sjson.DeleteBytes(body, "previous_response_id")
 	}
 
 	body, wsHeaders, errPromptCache := applyCodexPromptCacheHeadersWithContext(ctx, from, req, body, opts.Headers)
@@ -542,22 +701,11 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	upstreamBody, identityState := applyCodexIdentityConfuseBody(e.cfg, auth, originalPayloadSource, body)
 	reporter.SetTranslatedReasoningEffort(clientBody, to.String())
 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg)
+	if _, nativeCompactionEnabled := e.nativeCompactionSettings(); nativeCompactionEnabled {
+		appendCodexBetaFeature(wsHeaders, codexRemoteCompactionV2Feature)
+	}
 	applyModelHeaderOverrides(wsHeaders, baseModel)
 	applyCodexIdentityConfuseHeaders(wsHeaders, &identityState)
-
-	var authID, authLabel, authType, authValue string
-	authID = auth.ID
-	authLabel = auth.Label
-	authType, authValue = auth.AccountInfo()
-
-	executionSessionID := executionSessionIDFromOptions(opts)
-	var sess *codexWebsocketSession
-	if executionSessionID != "" {
-		sess = e.getOrCreateSession(executionSessionID)
-		if sess != nil {
-			sess.reqMu.Lock()
-		}
-	}
 
 	wsReqBody := buildCodexWebsocketRequestBody(upstreamBody)
 	wsReqLog := helps.UpstreamRequestLog{
@@ -590,9 +738,6 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			return nil, statusErr{code: respHS.StatusCode, msg: string(bodyErr)}
 		}
 		helps.RecordAPIWebsocketError(ctx, e.cfg, "dial", errDial)
-		if sess != nil {
-			sess.reqMu.Unlock()
-		}
 		return nil, errDial
 	}
 	recordAPIWebsocketHandshake(ctx, e.cfg, respHS)
@@ -618,6 +763,8 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				closeHTTPResponseBody(respHSRetry, "codex websockets executor: close handshake response body error")
 				helps.RecordAPIWebsocketError(ctx, e.cfg, "dial_retry", errDialRetry)
 				sess.clearActive(conn, readCh)
+				compactionScope.abandon()
+				releaseBeforeStream = false
 				sess.reqMu.Unlock()
 				return nil, errDialRetry
 			}
@@ -641,6 +788,8 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				helps.RecordAPIWebsocketError(ctx, e.cfg, "send_retry", errSendRetry)
 				e.invalidateUpstreamConn(sess, conn, "send_error", errSendRetry)
 				sess.clearActive(conn, readCh)
+				compactionScope.abandon()
+				releaseBeforeStream = false
 				sess.reqMu.Unlock()
 				return nil, errSendRetry
 			}
@@ -655,12 +804,14 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	}
 
 	out := make(chan cliproxyexecutor.StreamChunk)
+	releaseBeforeStream = false
 	go func() {
 		terminateReason := "completed"
 		var terminateErr error
 
 		defer close(out)
 		defer func() {
+			compactionScope.abandon()
 			if sess != nil {
 				sess.clearActive(conn, readCh)
 				sess.reqMu.Unlock()
@@ -778,6 +929,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			if eventType == "response.completed" || eventType == "response.done" {
 				completedPayload = normalizeCodexWebsocketCompletion(completedPayload)
 				completedPayload = patchCodexCompletedOutput(completedPayload, outputItemsByIndex, outputItemsFallback)
+				compactionScope.observeTerminal(completedPayload)
 				cacheCodexReasoningReplayFromCompleted(replayScope, completedPayload)
 				if detail, ok := helps.ParseCodexUsage(completedPayload); ok {
 					reporter.Publish(ctx, detail)
@@ -1583,6 +1735,7 @@ func (e *CodexWebsocketsExecutor) ensureUpstreamConn(ctx context.Context, auth *
 	sess.conn = conn
 	sess.wsURL = wsURL
 	sess.authID = authID
+	sess.remoteCompactionV2 = headerHasCodexBetaFeature(headers, codexRemoteCompactionV2Feature)
 	sess.readerConn = conn
 	sess.connMu.Unlock()
 
@@ -1590,6 +1743,20 @@ func (e *CodexWebsocketsExecutor) ensureUpstreamConn(ctx context.Context, auth *
 	go e.readUpstreamLoop(sess, conn)
 	logCodexWebsocketConnected(sess.sessionID, authID, wsURL)
 	return conn, resp, nil
+}
+
+func headerHasCodexBetaFeature(headers http.Header, feature string) bool {
+	if headers == nil {
+		return false
+	}
+	for _, value := range headers.Values("X-Codex-Beta-Features") {
+		for _, candidate := range strings.Split(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(candidate), feature) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (e *CodexWebsocketsExecutor) readUpstreamLoop(sess *codexWebsocketSession, conn *websocket.Conn) {
@@ -1647,6 +1814,14 @@ func (e *CodexWebsocketsExecutor) readUpstreamLoop(sess *codexWebsocketSession, 
 }
 
 func (e *CodexWebsocketsExecutor) invalidateUpstreamConn(sess *codexWebsocketSession, conn *websocket.Conn, reason string, err error) {
+	e.invalidateUpstreamConnWithNotification(sess, conn, reason, err, true)
+}
+
+func (e *CodexWebsocketsExecutor) invalidateUpstreamConnWithoutNotification(sess *codexWebsocketSession, conn *websocket.Conn, reason string, err error) {
+	e.invalidateUpstreamConnWithNotification(sess, conn, reason, err, false)
+}
+
+func (e *CodexWebsocketsExecutor) invalidateUpstreamConnWithNotification(sess *codexWebsocketSession, conn *websocket.Conn, reason string, err error, notify bool) {
 	if sess == nil || conn == nil {
 		return
 	}
@@ -1667,7 +1842,9 @@ func (e *CodexWebsocketsExecutor) invalidateUpstreamConn(sess *codexWebsocketSes
 	sess.connMu.Unlock()
 
 	logCodexWebsocketDisconnected(sessionID, authID, wsURL, reason, err)
-	sess.notifyUpstreamDisconnect(err)
+	if notify {
+		sess.notifyUpstreamDisconnect(err)
+	}
 	if errClose := conn.Close(); errClose != nil {
 		log.Errorf("codex websockets executor: close websocket error: %v", errClose)
 	}

@@ -34,7 +34,6 @@ func ConvertOpenAIResponsesRequestToCodex(modelName string, inputRawJSON []byte,
 	}
 
 	rawJSON, _ = sjson.DeleteBytes(rawJSON, "truncation")
-	rawJSON = applyResponsesCompactionCompatibility(rawJSON)
 
 	// Delete the user field as it is not supported by the Codex upstream.
 	rawJSON, _ = sjson.DeleteBytes(rawJSON, "user")
@@ -43,23 +42,6 @@ func ConvertOpenAIResponsesRequestToCodex(modelName string, inputRawJSON []byte,
 	rawJSON = convertSystemRoleToDeveloper(rawJSON)
 	rawJSON = normalizeCodexBuiltinTools(rawJSON)
 
-	return rawJSON
-}
-
-// applyResponsesCompactionCompatibility handles OpenAI Responses context_management.compaction
-// for Codex upstream compatibility.
-//
-// Codex /responses currently rejects context_management with:
-// {"detail":"Unsupported parameter: context_management"}.
-//
-// Compatibility strategy:
-// 1) Remove context_management before forwarding to Codex upstream.
-func applyResponsesCompactionCompatibility(rawJSON []byte) []byte {
-	if !gjson.GetBytes(rawJSON, "context_management").Exists() {
-		return rawJSON
-	}
-
-	rawJSON, _ = sjson.DeleteBytes(rawJSON, "context_management")
 	return rawJSON
 }
 

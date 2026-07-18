@@ -333,7 +333,7 @@ func TestUserFieldDeletion(t *testing.T) {
 	}
 }
 
-func TestContextManagementCompactionCompatibility(t *testing.T) {
+func TestContextManagementIsPreservedForExecutorValidation(t *testing.T) {
 	inputJSON := []byte(`{
 		"model": "gpt-5.2",
 		"context_management": [
@@ -348,8 +348,8 @@ func TestContextManagementCompactionCompatibility(t *testing.T) {
 	output := ConvertOpenAIResponsesRequestToCodex("gpt-5.2", inputJSON, false)
 	outputStr := string(output)
 
-	if gjson.Get(outputStr, "context_management").Exists() {
-		t.Fatalf("context_management should be removed for Codex compatibility")
+	if !gjson.Get(outputStr, "context_management").Exists() {
+		t.Fatalf("context_management should be preserved for explicit executor validation")
 	}
 	if gjson.Get(outputStr, "truncation").Exists() {
 		t.Fatalf("truncation should be removed for Codex compatibility")

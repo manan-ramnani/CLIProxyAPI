@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -353,6 +354,158 @@ func TestCodexWebsocketsExecutePreservesPreviousResponseIDUpstream(t *testing.T)
 	}
 }
 
+func TestCodexWebsocketsExecuteUsesCachedConnectionForNativeCompaction(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	payloads := make(chan []byte, 3)
+	connections := make(chan struct{}, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/responses" {
+			t.Errorf("request path = %s, want /responses", r.URL.Path)
+			http.Error(w, "unexpected path", http.StatusNotFound)
+			return
+		}
+		if !strings.Contains(r.Header.Get("X-Codex-Beta-Features"), codexRemoteCompactionV2Feature) {
+			t.Errorf("websocket handshake missing %s", codexRemoteCompactionV2Feature)
+		}
+		conn, errUpgrade := upgrader.Upgrade(w, r, nil)
+		if errUpgrade != nil {
+			t.Errorf("upgrade websocket: %v", errUpgrade)
+			return
+		}
+		connections <- struct{}{}
+		defer func() { _ = conn.Close() }()
+
+		generation := 0
+		for requestIndex := 0; requestIndex < 3; requestIndex++ {
+			_, payload, errRead := conn.ReadMessage()
+			if errRead != nil {
+				t.Errorf("read websocket request %d: %v", requestIndex, errRead)
+				return
+			}
+			payloads <- bytes.Clone(payload)
+			input := gjson.GetBytes(payload, "input").Array()
+			isCompaction := len(input) > 0 && input[len(input)-1].Get("type").String() == "compaction_trigger"
+			if isCompaction {
+				if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.output_item.done","output_index":0,"item":{"type":"compaction","id":"compact-ws","encrypted_content":"opaque-ws","metadata":{"source":"ws"}}}`)); errWrite != nil {
+					t.Errorf("write compaction item: %v", errWrite)
+					return
+				}
+				if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.completed","response":{"id":"internal-compact-response","output":[],"usage":{"input_tokens":900,"output_tokens":10,"total_tokens":910}}}`)); errWrite != nil {
+					t.Errorf("write compaction completion: %v", errWrite)
+					return
+				}
+				continue
+			}
+
+			generation++
+			text := "first"
+			inputTokens := 1_200
+			if generation == 2 {
+				text = "second"
+				inputTokens = 100
+			}
+			item := fmt.Sprintf(`{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"message-%d","role":"assistant","content":[{"type":"output_text","text":%q}]}}`, generation, text)
+			if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(item)); errWrite != nil {
+				t.Errorf("write generation item: %v", errWrite)
+				return
+			}
+			completed := fmt.Sprintf(`{"type":"response.completed","response":{"id":"generation-%d","output":[],"usage":{"input_tokens":%d,"output_tokens":10,"total_tokens":%d}}}`, generation, inputTokens, inputTokens+10)
+			if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(completed)); errWrite != nil {
+				t.Errorf("write generation completion: %v", errWrite)
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{
+		AuthDir:   t.TempDir(),
+		SDKConfig: config.SDKConfig{DisableImageGeneration: config.DisableImageGenerationAll},
+		Codex: config.CodexConfig{NativeCompaction: config.CodexNativeCompaction{
+			Enabled:               true,
+			TriggerTokens:         1_000,
+			ContextWindow:         2_000,
+			PreserveRecentTokens:  1,
+			RetainedMessageTokens: 64,
+		}},
+	}
+	exec := NewCodexWebsocketsExecutor(cfg)
+	exec.store = &codexWebsocketSessionStore{sessions: make(map[string]*codexWebsocketSession)}
+	auth := &cliproxyauth.Auth{ID: "codex-ws-compaction-auth", Provider: "codex", Attributes: map[string]string{"api_key": "sk-test", "base_url": server.URL}}
+	headers := http.Header{}
+	headers.Set(helps.ClaudeCodeSessionHeader, "claude-ws-compaction")
+	opts := cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatClaude,
+		Headers:      headers,
+		Metadata: map[string]any{
+			cliproxyexecutor.ExecutionSessionMetadataKey: "execution-ws-compaction",
+		},
+	}
+
+	first := cliproxyexecutor.Request{
+		Model:   "gpt-5.4",
+		Payload: []byte(`{"model":"gpt-5.4","max_tokens":128,"messages":[{"role":"user","content":"first request"}]}`),
+	}
+	if _, errExecute := exec.Execute(context.Background(), auth, first, opts); errExecute != nil {
+		t.Fatalf("first Execute() error = %v", errExecute)
+	}
+	second := cliproxyexecutor.Request{
+		Model: "gpt-5.4",
+		Payload: []byte(`{"model":"gpt-5.4","max_tokens":128,"messages":[
+			{"role":"user","content":"first request"},
+			{"role":"assistant","content":"first"},
+			{"role":"user","content":"second request"}
+		]}`),
+	}
+	if _, errExecute := exec.Execute(context.Background(), auth, second, opts); errExecute != nil {
+		t.Fatalf("second Execute() error = %v", errExecute)
+	}
+
+	gotPayloads := make([][]byte, 0, 3)
+	for len(gotPayloads) < 3 {
+		select {
+		case payload := <-payloads:
+			gotPayloads = append(gotPayloads, payload)
+		case <-time.After(5 * time.Second):
+			t.Fatalf("captured websocket payloads = %d, want 3", len(gotPayloads))
+		}
+	}
+	select {
+	case <-connections:
+	default:
+		t.Fatal("websocket connection was not established")
+	}
+	select {
+	case <-connections:
+		t.Fatal("native compaction opened a second websocket connection")
+	default:
+	}
+
+	compactInput := gjson.GetBytes(gotPayloads[1], "input").Array()
+	if len(compactInput) == 0 || compactInput[len(compactInput)-1].Get("type").String() != "compaction_trigger" {
+		t.Fatalf("second websocket frame is not compaction: %s", gotPayloads[1])
+	}
+	if gjson.GetBytes(gotPayloads[1], "previous_response_id").Exists() {
+		t.Fatalf("compaction frame retained previous_response_id: %s", gotPayloads[1])
+	}
+	generationInput := gjson.GetBytes(gotPayloads[2], "input").Array()
+	if gjson.GetBytes(gotPayloads[2], "previous_response_id").Exists() {
+		t.Fatalf("rewritten generation retained previous_response_id: %s", gotPayloads[2])
+	}
+	foundCompaction := false
+	for _, item := range generationInput {
+		if item.Get("type").String() == "compaction" && item.Get("encrypted_content").String() == "opaque-ws" && item.Get("metadata.source").String() == "ws" {
+			foundCompaction = true
+		}
+		if item.Get("type").String() == "compaction_trigger" {
+			t.Fatalf("internal compaction trigger leaked into generation: %s", gotPayloads[2])
+		}
+	}
+	if !foundCompaction {
+		t.Fatalf("opaque websocket compaction item missing from generation: %s", gotPayloads[2])
+	}
+}
+
 func TestCodexWebsocketsExecuteStreamPassesThroughUpstreamWebsocketPayloadForDownstreamWebsocket(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	capturedPayload := make(chan []byte, 1)
@@ -608,6 +761,50 @@ func TestCodexWebsocketsUpstreamDisconnectChanSignalsOnInvalidate(t *testing.T) 
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for disconnect signal")
+	}
+}
+
+func TestCodexWebsocketsInternalCompactionInvalidationIsSilent(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		for {
+			if _, _, errRead := conn.ReadMessage(); errRead != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	exec := NewCodexWebsocketsExecutor(&config.Config{})
+	sessionID := "silent-compaction-invalidation"
+	disconnectCh := exec.UpstreamDisconnectChan(sessionID)
+	sess := exec.getOrCreateSession(sessionID)
+	sess.connMu.Lock()
+	sess.conn = conn
+	sess.readerConn = conn
+	sess.connMu.Unlock()
+
+	exec.invalidateUpstreamConnWithoutNotification(sess, conn, "compaction_incomplete", errors.New("recoverable compaction failure"))
+	sess.connMu.Lock()
+	gotConn := sess.conn
+	sess.connMu.Unlock()
+	if gotConn != nil {
+		t.Fatal("failed internal compaction socket remained cached")
+	}
+	select {
+	case errDisconnect, ok := <-disconnectCh:
+		t.Fatalf("internal compaction invalidation notified downstream: err=%v open=%v", errDisconnect, ok)
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 
